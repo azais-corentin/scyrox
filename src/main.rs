@@ -5,7 +5,7 @@ use std::time::Duration;
 // You'll need to find these for your specific mouse
 // Use `lsusb` to find Vendor ID and Product ID
 const VENDOR_ID: u16 = 0x3554; // TODO: Replace with your mouse's VID
-// Supported Product IDs (preferred first)
+                               // Supported Product IDs (preferred first)
 const PRODUCT_IDS: [u16; 2] = [0xf5f6, 0xf5f7];
 
 const INTERFACE_NUM: u8 = 1; // Configuration interface (may need adjustment)
@@ -153,30 +153,6 @@ fn parse_firmware_response(data: &[u8], mode: ConnectionMode) -> String {
     }
 }
 
-/// Poll firmware/ready status - wired needs 5 polls, wireless needs 1
-fn poll_device_ready(
-    endpoint: &mut Endpoint<Interrupt, In>,
-    interface: &nusb::Interface,
-    mode: ConnectionMode,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let cmd = build_firmware_cmd();
-    let poll_count = match mode {
-        ConnectionMode::Wired => 1,    // Wired: 5 polls (from dump)
-        ConnectionMode::Wireless => 1, // Wireless: single poll
-    };
-
-    let mut last_response = Vec::new();
-    for i in 0..poll_count {
-        let desc = if poll_count > 1 {
-            format!("Ready Poll {}/{}", i + 1, poll_count)
-        } else {
-            "Firmware Version".to_string()
-        };
-        last_response = send_and_receive(endpoint, interface, &cmd, &desc, mode)?;
-    }
-    Ok(last_response)
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Mouse Configuration Reader");
     println!("==========================\n");
@@ -251,8 +227,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mode,
     )?;
 
-    // Command 0x1d - Firmware version / ready poll
-    let fw_response = poll_device_ready(&mut endpoint, &interface, mode)?;
+    // Command 0x1d - Firmware version
+    let fw_response = send_and_receive(
+        &mut endpoint,
+        &interface,
+        &build_firmware_cmd(),
+        "Firmware Version",
+        mode,
+    )?;
     let fw_version = parse_firmware_response(&fw_response, mode);
     println!("    Firmware: {}", fw_version);
 
