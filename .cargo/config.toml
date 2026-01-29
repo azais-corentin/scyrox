@@ -1,0 +1,3 @@
+[env]
+# Run tests sequentially to avoid concurrent USB access conflicts
+RUST_TEST_THREADS = "1"

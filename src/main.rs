@@ -1,691 +1,85 @@
-use nusb::transfer::{Buffer, ControlOut, ControlType, In, Interrupt, Recipient};
-use nusb::{Endpoint, MaybeFuture};
-use std::time::Duration;
+//! Scyrox mouse configuration CLI tool.
 
-// You'll need to find these for your specific mouse
-// Use `lsusb` to find Vendor ID and Product ID
-const VENDOR_ID: u16 = 0x3554; // TODO: Replace with your mouse's VID
-                               // Supported Product IDs (preferred first)
-const PRODUCT_IDS: [u16; 2] = [0xf5f6, 0xf5f7];
+use scyroxd::{ConnectionMode, Mouse, MouseError};
 
-const INTERFACE_NUM: u8 = 1; // Configuration interface (may need adjustment)
-const INTERRUPT_EP_IN: u8 = 0x82; // Interrupt endpoint for responses
+fn main() -> Result<(), MouseError> {
+    println!("Scyrox Mouse Configuration Reader");
+    println!("==================================\n");
 
-const PID_WIRED: u16 = 0xf5f6;
-const PID_WIRELESS: u16 = 0xf5f7;
-
-// Max packet sizes for endpoint 0x82 (from USB descriptors)
-const PACKET_SIZE_WIRED: usize = 64;
-const PACKET_SIZE_WIRELESS: usize = 49;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ConnectionMode {
-    Wired,    // PID 0xf5f6
-    Wireless, // PID 0xf5f7
-}
-
-impl ConnectionMode {
-    fn packet_size(self) -> usize {
-        match self {
-            ConnectionMode::Wired => PACKET_SIZE_WIRED,
-            ConnectionMode::Wireless => PACKET_SIZE_WIRELESS,
+    // Open connection to mouse
+    let mut mouse = match Mouse::open() {
+        Ok(m) => m,
+        Err(MouseError::NotFound { vid, pids }) => {
+            println!("Mouse not found!");
+            println!("  Looking for VID: 0x{:04x}", vid);
+            println!("  Looking for PIDs: {:?}", pids);
+            println!(
+                "\nMake sure the mouse is connected and you have permission to access USB devices."
+            );
+            return Ok(());
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum LiftOffDistance {
-    Low,    // 0.7mm (value 0x03)
-    Medium, // 1mm   (value 0x01)
-    High,   // 2mm   (value 0x02)
-}
-
-impl LiftOffDistance {
-    fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0x01 => Some(LiftOffDistance::Medium),
-            0x02 => Some(LiftOffDistance::High),
-            0x03 => Some(LiftOffDistance::Low),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for LiftOffDistance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LiftOffDistance::Low => write!(f, "0.7mm"),
-            LiftOffDistance::Medium => write!(f, "1mm"),
-            LiftOffDistance::High => write!(f, "2mm"),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct MouseConfig {
-    polling_rate_hz: u16,
-    lift_off_distance: LiftOffDistance,
-    sleep_timeout_seconds: u16,
-    long_distance_mode: bool,
-    ripple_control: bool,
-    angle_snapping: bool,
-    high_speed_mode: bool,
-}
-
-/// Decode polling rate byte to Hz
-fn decode_polling_rate(byte: u8) -> Option<u16> {
-    match byte {
-        0x08 => Some(125),
-        0x04 => Some(250),
-        0x02 => Some(500),
-        0x01 => Some(1000),
-        0x10 => Some(2000),
-        0x20 => Some(4000),
-        0x40 => Some(8000),
-        _ => None,
-    }
-}
-
-/// Decode sleep timeout byte to seconds (value * 10)
-fn decode_sleep_timeout(byte: u8) -> u16 {
-    (byte as u16) * 10
-}
-
-/// Calculate checksum for command packet
-/// The checksum appears to make the sum of all bytes equal a constant
-fn calculate_checksum(data: &[u8]) -> u8 {
-    let sum: u8 = data.iter().fold(0u8, |acc, &x| acc.wrapping_add(x));
-    0x55u8.wrapping_sub(sum)
-}
-
-/// Build a command packet (17 bytes: 16 data + checksum)
-fn build_command(cmd: u8, subcmd: u8, offset: u16, length: u8) -> [u8; 17] {
-    let mut packet = [0u8; 17];
-    packet[0] = 0x08;
-    packet[1] = cmd;
-    packet[2] = subcmd;
-    packet[3] = (offset >> 8) as u8; // Offset HIGH byte
-    packet[4] = offset as u8; // Offset LOW byte
-    packet[5] = length;
-    // Bytes 6-15 are zero
-    packet[16] = calculate_checksum(&packet[0..16]);
-    packet
-}
-
-/// Build memory read command (cmd 0x08)
-fn build_memory_read(offset: u16, length: u8) -> [u8; 17] {
-    build_command(0x08, 0x00, offset, length)
-}
-
-/// Build device info command (cmd 0x01)
-fn build_device_info_cmd(offset: u16, length: u8) -> [u8; 17] {
-    build_command(0x01, 0x00, offset, length)
-}
-
-/// Build receiver firmware version command (cmd 0x1d)
-/// In wireless mode: returns receiver firmware (0x0216 => v2.16)
-/// In wired mode: returns 0 (no receiver)
-fn build_receiver_firmware_cmd() -> [u8; 17] {
-    build_command(0x1d, 0x00, 0, 0)
-}
-
-/// Build mouse firmware version command (cmd 0x12)
-/// Returns mouse firmware version (0x0222 => v2.22)
-fn build_mouse_firmware_cmd() -> [u8; 17] {
-    build_command(0x12, 0x00, 0, 0)
-}
-
-/// Build status command (cmd 0x03)
-fn build_status_cmd() -> [u8; 17] {
-    build_command(0x03, 0x00, 0, 0)
-}
-
-/// Build battery status command (cmd 0x04)
-fn build_battery_cmd() -> [u8; 17] {
-    build_command(0x04, 0x00, 0, 0)
-}
-
-/// Build wireless status command (cmd 0x17) - wireless only
-fn build_wireless_status_cmd() -> [u8; 17] {
-    build_command(0x17, 0x00, 0, 0)
-}
-
-/// Build config flags command (cmd 0x02)
-fn build_config_flags_cmd(param: u16) -> [u8; 17] {
-    build_command(0x02, 0x00, param, 0)
-}
-
-// Typical Li-ion: 3600mV ~= 0%, 4200mV ~= 100%
-// https://electronics.stackexchange.com/a/551667
-fn voltage_to_percentage(voltage_mv: u16) -> u8 {
-    let v = voltage_mv as f32 / 1000.0;
-    // p = 123 - 123 / (1 + (v/3.7)^80)^0.165
-    let denom = (1.0 + (v / 3.7).powi(80)).powf(0.165);
-    let value = 123.0 - 123.0 / denom;
-    let percent = value.round() as i32;
-    if percent < 0 {
-        0
-    } else if percent > 100 {
-        100
-    } else {
-        percent as u8
-    }
-}
-
-#[derive(Debug)]
-struct BatteryStatus {
-    voltage_mv: u16,
-    percentage: u8,
-}
-
-fn parse_battery_packet(data: &[u8]) -> Option<BatteryStatus> {
-    if data.len() >= 10 && data[0] == 0x08 && data[1] == 0x04 {
-        // Bytes 8-9: battery voltage in mV (big-endian)
-        let voltage_mv = u16::from_be_bytes([data[8], data[9]]);
-        let percentage = voltage_to_percentage(voltage_mv);
-        Some(BatteryStatus {
-            voltage_mv,
-            percentage,
-        })
-    } else {
-        None
-    }
-}
-
-/// Decode a BCD (Binary Coded Decimal) byte to its decimal value
-/// e.g., 0x16 => 16, 0x22 => 22
-fn decode_bcd(byte: u8) -> u8 {
-    let high = (byte >> 4) & 0x0F;
-    let low = byte & 0x0F;
-    high * 10 + low
-}
-
-/// Parse mouse firmware response (command 0x12)
-/// Response format: bytes 6-7 contain version in BCD (0x0222 => v2.22)
-fn parse_mouse_firmware_response(data: &[u8]) -> String {
-    if data.len() < 8 || data[0] != 0x08 || data[1] != 0x12 {
-        return "Unknown".to_string();
-    }
-    // Bytes 6-7: version in BCD format
-    let major = decode_bcd(data[6]);
-    let minor = decode_bcd(data[7]);
-    format!("v{}.{}", major, minor)
-}
-
-/// Parse receiver firmware response (command 0x1d)
-/// In wireless mode: bytes 6-7 contain version in BCD (0x0216 => v2.16)
-/// In wired mode: byte 2 = 0x01 indicates no receiver
-fn parse_receiver_firmware_response(data: &[u8], mode: ConnectionMode) -> String {
-    if data.len() < 8 || data[0] != 0x08 || data[1] != 0x1d {
-        return "Unknown".to_string();
-    }
-    match mode {
-        ConnectionMode::Wireless => {
-            // Wireless: version at bytes 6-7 in BCD format
-            let major = decode_bcd(data[6]);
-            let minor = decode_bcd(data[7]);
-            format!("v{}.{}", major, minor)
-        }
-        ConnectionMode::Wired => {
-            // Wired: byte 2 = 0x01 indicates no receiver
-            if data[2] == 0x01 {
-                "N/A (wired mode)".to_string()
-            } else {
-                "Unknown".to_string()
-            }
-        }
-    }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Mouse Configuration Reader");
-    println!("==========================\n");
-
-    // List all USB devices to help find the mouse
-    println!("Available USB devices:");
-    for device in nusb::list_devices().wait()? {
-        println!(
-            "  {:04x}:{:04x} - {} {}",
-            device.vendor_id(),
-            device.product_id(),
-            device.manufacturer_string().unwrap_or("Unknown"),
-            device.product_string().unwrap_or("Unknown")
-        );
-    }
-    println!();
-
-    if VENDOR_ID == 0 || PRODUCT_IDS.iter().all(|&pid| pid == 0) {
-        println!("ERROR: Please set VENDOR_ID and PRODUCT_IDS constants to match your mouse.");
-        println!("       Look for your mouse in the device list above.");
-        return Ok(());
-    }
-
-    // Find and open the mouse (prefer earlier PIDs in the list)
-    let (device_info, mode) = PRODUCT_IDS
-        .iter()
-        .find_map(|&pid| {
-            let device = nusb::list_devices()
-                .wait()
-                .ok()?
-                .find(|d| d.vendor_id() == VENDOR_ID && d.product_id() == pid)?;
-            let mode = match pid {
-                PID_WIRED => ConnectionMode::Wired,
-                PID_WIRELESS => ConnectionMode::Wireless,
-                _ => ConnectionMode::Wireless, // Default fallback
-            };
-            Some((device, mode))
-        })
-        .ok_or("Mouse not found")?;
-
-    let mode_str = match mode {
-        ConnectionMode::Wired => "Wired (USB)",
-        ConnectionMode::Wireless => "Wireless (2.4GHz)",
+        Err(e) => return Err(e),
     };
 
-    println!(
-        "Found mouse: {} {}",
-        device_info.manufacturer_string().unwrap_or("Unknown"),
-        device_info.product_string().unwrap_or("Unknown")
-    );
-    println!("Connection: {}", mode_str);
+    println!("Connection: {}\n", mouse.connection_mode());
 
-    let device = device_info.open().wait()?;
-
-    // Detach kernel driver and claim interface
-    let interface = device.detach_and_claim_interface(INTERFACE_NUM).wait()?;
-
-    println!("Interface claimed successfully\n");
-
-    // Create endpoint once and reuse for all commands
-    let mut endpoint = interface.endpoint::<Interrupt, In>(INTERRUPT_EP_IN)?;
-
-    // Read initial device information
-    println!("=== Device Information ===\n");
-
-    // Command 0x01 - Device info/serial
-    send_and_receive(
-        &mut endpoint,
-        &interface,
-        &build_device_info_cmd(0x0008, 0x28),
-        "Device Info",
-        mode,
-    )?;
-
-    // Command 0x12 - Mouse firmware version
-    let mouse_fw_response = send_and_receive(
-        &mut endpoint,
-        &interface,
-        &build_mouse_firmware_cmd(),
-        "Mouse Firmware",
-        mode,
-    )?;
-    let mouse_fw = parse_mouse_firmware_response(&mouse_fw_response);
-    println!("    Mouse Firmware: {}", mouse_fw);
-
-    // Command 0x1d - Receiver firmware version (wireless only has meaningful data)
-    let receiver_fw_response = send_and_receive(
-        &mut endpoint,
-        &interface,
-        &build_receiver_firmware_cmd(),
-        "Receiver Firmware",
-        mode,
-    )?;
-    let receiver_fw = parse_receiver_firmware_response(&receiver_fw_response, mode);
-    println!("    Receiver Firmware: {}", receiver_fw);
-
-    // Command 0x03 - Status
-    send_and_receive(
-        &mut endpoint,
-        &interface,
-        &build_status_cmd(),
-        "Status",
-        mode,
-    )?;
-
-    // Command 0x02 - Config flags
-    send_and_receive(
-        &mut endpoint,
-        &interface,
-        &build_config_flags_cmd(0x0101),
-        "Config Flags",
-        mode,
-    )?;
-
-    // Read another device info
-    send_and_receive(
-        &mut endpoint,
-        &interface,
-        &build_device_info_cmd(0x0008, 0x00),
-        "Device Info 2",
-        mode,
-    )?;
-
-    // Now read the full configuration memory
-    println!("\n=== Configuration Memory Dump ===\n");
-
-    let mut config_data = Vec::new();
-    let chunk_size = 10u8;
-    let total_size = 0xE0u16; // ~224 bytes, covers the observed range
-
-    for offset in (0..total_size).step_by(chunk_size as usize) {
-        let cmd = build_memory_read(offset, chunk_size);
-
-        match send_and_receive(
-            &mut endpoint,
-            &interface,
-            &cmd,
-            &format!("Memory 0x{:04X}", offset),
-            mode,
-        ) {
-            Ok(response) => {
-                // Extract data bytes (skip header, take 'length' bytes)
-                if response.len() >= 16 {
-                    let data_start = 6;
-                    let data_end = data_start + chunk_size as usize;
-                    if data_end <= response.len() {
-                        config_data.extend_from_slice(&response[data_start..data_end]);
-                    }
-                }
-            }
-            Err(e) => {
-                println!("  Error reading offset 0x{:04X}: {}", offset, e);
-                break;
+    // Read firmware info
+    println!("=== Firmware ===\n");
+    match mouse.get_firmware_info() {
+        Ok(firmware) => {
+            println!("  Mouse:    {}", firmware.mouse_version);
+            match (mouse.connection_mode(), firmware.receiver_version) {
+                (ConnectionMode::Wireless, Some(ref v)) => println!("  Receiver: {}", v),
+                (ConnectionMode::Wireless, None) => println!("  Receiver: Unknown"),
+                (ConnectionMode::Wired, _) => println!("  Receiver: N/A (wired mode)"),
             }
         }
+        Err(e) => println!("  Error reading firmware: {}", e),
     }
 
-    // Print the full configuration dump
-    println!(
-        "\n=== Full Configuration Data ({} bytes) ===\n",
-        config_data.len()
-    );
-    print_hex_dump(&config_data);
+    // Read battery status
+    println!("\n=== Battery ===\n");
+    match mouse.get_battery() {
+        Ok(battery) => {
+            println!("  Voltage:    {} mV", battery.voltage_mv);
+            println!("  Percentage: {}%", battery.percentage);
+        }
+        Err(e) => println!("  Error reading battery: {}", e),
+    }
 
-    // Extract and decode configuration values
-    // Memory offsets:
-    // - 0x00: Polling Rate
-    // - 0x0A: Lift-Off Distance
-    // - 0xAD: Sleep Timeout (value * 10 = seconds)
-    // - 0xAF: Angle Snapping (0=off, 1=on)
-    // - 0xB1: Ripple Control (0=off, 1=on)
-    // - 0xB5: High Speed Mode (0=off, 1=on)
-    // Command 0x17 byte 6: Long Distance Mode (0=off, 1=on)
-
-    // Query long distance mode via command 0x17
-    let long_distance_response = send_and_receive(
-        &mut endpoint,
-        &interface,
-        &build_wireless_status_cmd(),
-        "Long Distance Mode Query",
-        mode,
-    )?;
-    let long_distance_mode = long_distance_response
-        .get(6)
-        .map(|&b| b == 0x01)
-        .unwrap_or(false);
-
-    // Extract configuration from memory dump
-    if config_data.len() >= 0xB6 {
-        let polling_rate_hz = config_data.first().and_then(|&b| decode_polling_rate(b));
-        let lift_off_distance = config_data
-            .get(0x0A)
-            .and_then(|&b| LiftOffDistance::from_byte(b));
-        let sleep_timeout_seconds = config_data.get(0xAD).map(|&b| decode_sleep_timeout(b));
-        let angle_snapping = config_data.get(0xAF).map(|&b| b == 0x01);
-        let ripple_control = config_data.get(0xB1).map(|&b| b == 0x01);
-        let high_speed_mode = config_data.get(0xB5).map(|&b| b == 0x01);
-
-        if let (
-            Some(polling_rate_hz),
-            Some(lift_off_distance),
-            Some(sleep_timeout_seconds),
-            Some(angle_snapping),
-            Some(ripple_control),
-            Some(high_speed_mode),
-        ) = (
-            polling_rate_hz,
-            lift_off_distance,
-            sleep_timeout_seconds,
-            angle_snapping,
-            ripple_control,
-            high_speed_mode,
-        ) {
-            let config = MouseConfig {
-                polling_rate_hz,
-                lift_off_distance,
-                sleep_timeout_seconds,
-                long_distance_mode,
-                ripple_control,
-                angle_snapping,
-                high_speed_mode,
-            };
-
-            println!("\n=== Decoded Configuration ===\n");
-            println!("Polling Rate:      {} Hz", config.polling_rate_hz);
-            println!("Lift-Off Distance: {}", config.lift_off_distance);
+    // Read configuration
+    println!("\n=== Configuration ===\n");
+    match mouse.get_config() {
+        Ok(config) => {
+            println!("  Polling Rate:      {}", config.polling_rate);
+            println!("  Lift-Off Distance: {}", config.lift_off_distance);
             println!(
-                "Sleep Timeout:     {} seconds",
+                "  Sleep Timeout:     {} seconds",
                 config.sleep_timeout_seconds
             );
             println!(
-                "Long Distance:     {}",
+                "  Angle Snapping:    {}",
+                if config.angle_snapping { "On" } else { "Off" }
+            );
+            println!(
+                "  Ripple Control:    {}",
+                if config.ripple_control { "On" } else { "Off" }
+            );
+            println!(
+                "  High Speed Mode:   {}",
+                if config.high_speed_mode { "On" } else { "Off" }
+            );
+            println!(
+                "  Long Distance:     {}",
                 if config.long_distance_mode {
                     "On"
                 } else {
                     "Off"
                 }
             );
-            println!(
-                "Ripple Control:    {}",
-                if config.ripple_control { "On" } else { "Off" }
-            );
-            println!(
-                "Angle Snapping:    {}",
-                if config.angle_snapping { "On" } else { "Off" }
-            );
-            println!(
-                "High Speed Mode:   {}",
-                if config.high_speed_mode { "On" } else { "Off" }
-            );
-        } else {
-            println!("\n=== Configuration Decode Error ===\n");
-            println!("Could not decode all configuration values.");
-            println!(
-                "  Polling Rate:      {:?}",
-                config_data.first().and_then(|&b| decode_polling_rate(b))
-            );
-            println!(
-                "  Lift-Off Distance: {:?}",
-                config_data
-                    .get(0x0A)
-                    .and_then(|&b| LiftOffDistance::from_byte(b))
-            );
-            println!(
-                "  Sleep Timeout:     {:?}",
-                config_data.get(0xAD).map(|&b| decode_sleep_timeout(b))
-            );
-            println!(
-                "  Angle Snapping:    {:?}",
-                config_data.get(0xAF).map(|&b| b == 0x01)
-            );
-            println!(
-                "  Ripple Control:    {:?}",
-                config_data.get(0xB1).map(|&b| b == 0x01)
-            );
-            println!(
-                "  High Speed Mode:   {:?}",
-                config_data.get(0xB5).map(|&b| b == 0x01)
-            );
-            println!("  Long Distance:     {}", long_distance_mode);
         }
-    } else {
-        println!("\n=== Configuration Error ===\n");
-        println!(
-            "Insufficient memory data read ({} bytes, need at least 182)",
-            config_data.len()
-        );
-    }
-
-    // Query battery status
-    println!("\n=== Battery Status ===\n");
-    send_and_receive(
-        &mut endpoint,
-        &interface,
-        &build_battery_cmd(),
-        "Battery",
-        mode,
-    )?;
-
-    // Wireless-only: Query wireless status (0x17)
-    if mode == ConnectionMode::Wireless {
-        println!("\n=== Wireless Status ===\n");
-        send_and_receive(
-            &mut endpoint,
-            &interface,
-            &build_wireless_status_cmd(),
-            "Wireless Status",
-            mode,
-        )?;
+        Err(e) => println!("  Error reading configuration: {}", e),
     }
 
     Ok(())
-}
-
-/// Send a command and receive the response
-fn send_and_receive(
-    endpoint: &mut Endpoint<Interrupt, In>,
-    interface: &nusb::Interface,
-    cmd: &[u8; 17],
-    description: &str,
-    mode: ConnectionMode,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    println!(">>> {} ", description);
-    println!("    TX: {}", hex::encode(cmd));
-
-    // Set up read buffer BEFORE sending command
-    // This ensures we're listening when the device responds
-    // Use mode-specific packet size from USB descriptors
-    let packet_size = mode.packet_size();
-    let mut response = vec![0u8; packet_size];
-
-    let buf = Buffer::new(packet_size);
-    endpoint.submit(buf);
-
-    // Now send command via control transfer
-    let result = interface
-        .control_out(
-            ControlOut {
-                control_type: ControlType::Class,
-                recipient: Recipient::Interface,
-                request: 0x09, // SET_REPORT
-                value: 0x0208, // Report Type (Output=2) | Report ID (0x08)
-                index: INTERFACE_NUM as u16,
-                data: cmd,
-            },
-            Duration::from_millis(100),
-        )
-        .wait();
-
-    if result.is_err() {
-        // Try alternative: vendor-specific transfer
-        interface
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Vendor,
-                    recipient: Recipient::Interface,
-                    request: 0x09,
-                    value: 0x0208,
-                    index: INTERFACE_NUM as u16,
-                    data: cmd,
-                },
-                Duration::from_millis(100),
-            )
-            .wait()?;
-    }
-
-    // Wait for response on interrupt endpoint
-    // Try reading multiple packets in case there's an ACK followed by data
-    let mut bytes_read = 0;
-    for i in 0..3 {
-        // Submit another buffer for next read
-        if i > 0 {
-            let buf = Buffer::new(packet_size);
-            endpoint.submit(buf);
-        }
-
-        match endpoint.wait_next_complete(Duration::from_millis(100)) {
-            Some(completion) => {
-                if completion.status.is_ok() {
-                    let len = completion.buffer.len();
-                    println!(
-                        "    RX[{}]: {} ({} bytes)",
-                        i,
-                        hex::encode(&*completion.buffer),
-                        len
-                    );
-                    // Use the last successful response
-                    if len > 0 {
-                        let copy_len = len.min(response.len());
-                        response[..copy_len].copy_from_slice(&completion.buffer[..copy_len]);
-                        bytes_read = copy_len;
-                    }
-                } else {
-                    println!("    RX[{}] error: {:?}", i, completion.status);
-                    break;
-                }
-            }
-            None => {
-                if i == 0 {
-                    println!("    EP timeout");
-                }
-                break;
-            }
-        }
-    }
-    let bytes_read = bytes_read;
-
-    if bytes_read > 0 {
-        // Check for battery status packet (0x08 0x04)
-        if let Some(battery) = parse_battery_packet(&response[..bytes_read]) {
-            println!(
-                "    Battery: {} mV ({}%)",
-                battery.voltage_mv, battery.percentage
-            );
-        }
-    }
-
-    Ok(response[..bytes_read].to_vec())
-}
-
-/// Print a hex dump of data
-fn print_hex_dump(data: &[u8]) {
-    for (i, chunk) in data.chunks(16).enumerate() {
-        let offset = i * 16;
-        print!("{:04X}: ", offset);
-
-        for (j, byte) in chunk.iter().enumerate() {
-            print!("{:02X} ", byte);
-            if j == 7 {
-                print!(" ");
-            }
-        }
-
-        // Padding for incomplete lines
-        for j in chunk.len()..16 {
-            print!("   ");
-            if j == 7 {
-                print!(" ");
-            }
-        }
-
-        print!(" |");
-        for byte in chunk {
-            if *byte >= 0x20 && *byte <= 0x7E {
-                print!("{}", *byte as char);
-            } else {
-                print!(".");
-            }
-        }
-        println!("|");
-    }
 }
