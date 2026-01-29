@@ -5,7 +5,7 @@ use std::time::Duration;
 // You'll need to find these for your specific mouse
 // Use `lsusb` to find Vendor ID and Product ID
 const VENDOR_ID: u16 = 0x3554; // TODO: Replace with your mouse's VID
-// Supported Product IDs (preferred first)
+                               // Supported Product IDs (preferred first)
 const PRODUCT_IDS: [u16; 2] = [0xf5f6, 0xf5f7];
 
 const INTERFACE_NUM: u8 = 1; // Configuration interface (may need adjustment)
@@ -31,6 +31,64 @@ impl ConnectionMode {
             ConnectionMode::Wireless => PACKET_SIZE_WIRELESS,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LiftOffDistance {
+    Low,    // 0.7mm (value 0x03)
+    Medium, // 1mm   (value 0x01)
+    High,   // 2mm   (value 0x02)
+}
+
+impl LiftOffDistance {
+    fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0x01 => Some(LiftOffDistance::Medium),
+            0x02 => Some(LiftOffDistance::High),
+            0x03 => Some(LiftOffDistance::Low),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for LiftOffDistance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LiftOffDistance::Low => write!(f, "0.7mm"),
+            LiftOffDistance::Medium => write!(f, "1mm"),
+            LiftOffDistance::High => write!(f, "2mm"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MouseConfig {
+    polling_rate_hz: u16,
+    lift_off_distance: LiftOffDistance,
+    sleep_timeout_seconds: u16,
+    long_distance_mode: bool,
+    ripple_control: bool,
+    angle_snapping: bool,
+    high_speed_mode: bool,
+}
+
+/// Decode polling rate byte to Hz
+fn decode_polling_rate(byte: u8) -> Option<u16> {
+    match byte {
+        0x08 => Some(125),
+        0x04 => Some(250),
+        0x02 => Some(500),
+        0x01 => Some(1000),
+        0x10 => Some(2000),
+        0x20 => Some(4000),
+        0x40 => Some(8000),
+        _ => None,
+    }
+}
+
+/// Decode sleep timeout byte to seconds (value * 10)
+fn decode_sleep_timeout(byte: u8) -> u16 {
+    (byte as u16) * 10
 }
 
 /// Calculate checksum for command packet
@@ -342,6 +400,131 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config_data.len()
     );
     print_hex_dump(&config_data);
+
+    // Extract and decode configuration values
+    // Memory offsets:
+    // - 0x00: Polling Rate
+    // - 0x0A: Lift-Off Distance
+    // - 0xAD: Sleep Timeout (value * 10 = seconds)
+    // - 0xAF: Angle Snapping (0=off, 1=on)
+    // - 0xB1: Ripple Control (0=off, 1=on)
+    // - 0xB5: High Speed Mode (0=off, 1=on)
+    // Command 0x17 byte 6: Long Distance Mode (0=off, 1=on)
+
+    // Query long distance mode via command 0x17
+    let long_distance_response = send_and_receive(
+        &mut endpoint,
+        &interface,
+        &build_wireless_status_cmd(),
+        "Long Distance Mode Query",
+        mode,
+    )?;
+    let long_distance_mode = long_distance_response
+        .get(6)
+        .map(|&b| b == 0x01)
+        .unwrap_or(false);
+
+    // Extract configuration from memory dump
+    if config_data.len() >= 0xB6 {
+        let polling_rate_hz = config_data.first().and_then(|&b| decode_polling_rate(b));
+        let lift_off_distance = config_data
+            .get(0x0A)
+            .and_then(|&b| LiftOffDistance::from_byte(b));
+        let sleep_timeout_seconds = config_data.get(0xAD).map(|&b| decode_sleep_timeout(b));
+        let angle_snapping = config_data.get(0xAF).map(|&b| b == 0x01);
+        let ripple_control = config_data.get(0xB1).map(|&b| b == 0x01);
+        let high_speed_mode = config_data.get(0xB5).map(|&b| b == 0x01);
+
+        if let (
+            Some(polling_rate_hz),
+            Some(lift_off_distance),
+            Some(sleep_timeout_seconds),
+            Some(angle_snapping),
+            Some(ripple_control),
+            Some(high_speed_mode),
+        ) = (
+            polling_rate_hz,
+            lift_off_distance,
+            sleep_timeout_seconds,
+            angle_snapping,
+            ripple_control,
+            high_speed_mode,
+        ) {
+            let config = MouseConfig {
+                polling_rate_hz,
+                lift_off_distance,
+                sleep_timeout_seconds,
+                long_distance_mode,
+                ripple_control,
+                angle_snapping,
+                high_speed_mode,
+            };
+
+            println!("\n=== Decoded Configuration ===\n");
+            println!("Polling Rate:      {} Hz", config.polling_rate_hz);
+            println!("Lift-Off Distance: {}", config.lift_off_distance);
+            println!(
+                "Sleep Timeout:     {} seconds",
+                config.sleep_timeout_seconds
+            );
+            println!(
+                "Long Distance:     {}",
+                if config.long_distance_mode {
+                    "On"
+                } else {
+                    "Off"
+                }
+            );
+            println!(
+                "Ripple Control:    {}",
+                if config.ripple_control { "On" } else { "Off" }
+            );
+            println!(
+                "Angle Snapping:    {}",
+                if config.angle_snapping { "On" } else { "Off" }
+            );
+            println!(
+                "High Speed Mode:   {}",
+                if config.high_speed_mode { "On" } else { "Off" }
+            );
+        } else {
+            println!("\n=== Configuration Decode Error ===\n");
+            println!("Could not decode all configuration values.");
+            println!(
+                "  Polling Rate:      {:?}",
+                config_data.first().and_then(|&b| decode_polling_rate(b))
+            );
+            println!(
+                "  Lift-Off Distance: {:?}",
+                config_data
+                    .get(0x0A)
+                    .and_then(|&b| LiftOffDistance::from_byte(b))
+            );
+            println!(
+                "  Sleep Timeout:     {:?}",
+                config_data.get(0xAD).map(|&b| decode_sleep_timeout(b))
+            );
+            println!(
+                "  Angle Snapping:    {:?}",
+                config_data.get(0xAF).map(|&b| b == 0x01)
+            );
+            println!(
+                "  Ripple Control:    {:?}",
+                config_data.get(0xB1).map(|&b| b == 0x01)
+            );
+            println!(
+                "  High Speed Mode:   {:?}",
+                config_data.get(0xB5).map(|&b| b == 0x01)
+            );
+            println!("  Long Distance:     {}", long_distance_mode);
+        }
+    } else {
+        println!("\n=== Configuration Error ===\n");
+        println!(
+            "Insufficient memory data read ({} bytes, need at least 182)",
+            config_data.len()
+        );
+    }
 
     // Query battery status
     println!("\n=== Battery Status ===\n");
