@@ -5,7 +5,7 @@ use std::time::Duration;
 // You'll need to find these for your specific mouse
 // Use `lsusb` to find Vendor ID and Product ID
 const VENDOR_ID: u16 = 0x3554; // TODO: Replace with your mouse's VID
-                               // Supported Product IDs (preferred first)
+// Supported Product IDs (preferred first)
 const PRODUCT_IDS: [u16; 2] = [0xf5f6, 0xf5f7];
 
 const INTERFACE_NUM: u8 = 1; // Configuration interface (may need adjustment)
@@ -97,21 +97,14 @@ fn build_config_flags_cmd(param: u16) -> [u8; 17] {
     build_command(0x02, 0x00, param, 0)
 }
 
-// Battery voltage to percentage conversion
-// Based on observed data:
-//   4088mV => 86%
-//   3967mV => 58%
-//   3808mV => 41%
-//   3804mV => 40%
-//   3800mV => 39%
-//   3766mV => 35%
-//   3750mV => 32%
-//   3679mV => 27%
-// Typical Li-ion: ~3000mV = 0%, ~4200mV = 100%
+// Typical Li-ion: 3600mV ~= 0%, 4200mV ~= 100%
+// https://electronics.stackexchange.com/a/551667
 fn voltage_to_percentage(voltage_mv: u16) -> u8 {
-    let x = voltage_mv as f32;
-    let percent = 0.000034 * x * x - 0.1496 * x + 116.4;
-    let percent = percent.round() as i32;
+    let v = voltage_mv as f32 / 1000.0;
+    // p = 123 - 123 / (1 + (v/3.7)^80)^0.165
+    let denom = (1.0 + (v / 3.7).powi(80)).powf(0.165);
+    let value = 123.0 - 123.0 / denom;
+    let percent = value.round() as i32;
     if percent < 0 {
         0
     } else if percent > 100 {
