@@ -64,9 +64,17 @@ fn build_device_info_cmd(offset: u16, length: u8) -> [u8; 17] {
     build_command(0x01, 0x00, offset, length)
 }
 
-/// Build firmware version command (cmd 0x1d)
-fn build_firmware_cmd() -> [u8; 17] {
+/// Build receiver firmware version command (cmd 0x1d)
+/// In wireless mode: returns receiver firmware (0x0216 => v2.16)
+/// In wired mode: returns 0 (no receiver)
+fn build_receiver_firmware_cmd() -> [u8; 17] {
     build_command(0x1d, 0x00, 0, 0)
+}
+
+/// Build mouse firmware version command (cmd 0x12)
+/// Returns mouse firmware version (0x0222 => v2.22)
+fn build_mouse_firmware_cmd() -> [u8; 17] {
+    build_command(0x12, 0x00, 0, 0)
 }
 
 /// Build status command (cmd 0x03)
@@ -133,17 +141,42 @@ fn parse_battery_packet(data: &[u8]) -> Option<BatteryStatus> {
     }
 }
 
-fn parse_firmware_response(data: &[u8], mode: ConnectionMode) -> String {
+/// Decode a BCD (Binary Coded Decimal) byte to its decimal value
+/// e.g., 0x16 => 16, 0x22 => 22
+fn decode_bcd(byte: u8) -> u8 {
+    let high = (byte >> 4) & 0x0F;
+    let low = byte & 0x0F;
+    high * 10 + low
+}
+
+/// Parse mouse firmware response (command 0x12)
+/// Response format: bytes 6-7 contain version in BCD (0x0222 => v2.22)
+fn parse_mouse_firmware_response(data: &[u8]) -> String {
+    if data.len() < 8 || data[0] != 0x08 || data[1] != 0x12 {
+        return "Unknown".to_string();
+    }
+    // Bytes 6-7: version in BCD format
+    let major = decode_bcd(data[6]);
+    let minor = decode_bcd(data[7]);
+    format!("v{}.{}", major, minor)
+}
+
+/// Parse receiver firmware response (command 0x1d)
+/// In wireless mode: bytes 6-7 contain version in BCD (0x0216 => v2.16)
+/// In wired mode: byte 2 = 0x01 indicates no receiver
+fn parse_receiver_firmware_response(data: &[u8], mode: ConnectionMode) -> String {
     if data.len() < 8 || data[0] != 0x08 || data[1] != 0x1d {
         return "Unknown".to_string();
     }
     match mode {
         ConnectionMode::Wireless => {
-            // Wireless: version at bytes 6-7 (e.g., 0x02, 0x16 -> "v2.22")
-            format!("v{}.{}", data[6], data[7])
+            // Wireless: version at bytes 6-7 in BCD format
+            let major = decode_bcd(data[6]);
+            let minor = decode_bcd(data[7]);
+            format!("v{}.{}", major, minor)
         }
         ConnectionMode::Wired => {
-            // Wired: byte 2 = 0x01 indicates ready, no version info
+            // Wired: byte 2 = 0x01 indicates no receiver
             if data[2] == 0x01 {
                 "N/A (wired mode)".to_string()
             } else {
@@ -227,16 +260,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mode,
     )?;
 
-    // Command 0x1d - Firmware version
-    let fw_response = send_and_receive(
+    // Command 0x12 - Mouse firmware version
+    let mouse_fw_response = send_and_receive(
         &mut endpoint,
         &interface,
-        &build_firmware_cmd(),
-        "Firmware Version",
+        &build_mouse_firmware_cmd(),
+        "Mouse Firmware",
         mode,
     )?;
-    let fw_version = parse_firmware_response(&fw_response, mode);
-    println!("    Firmware: {}", fw_version);
+    let mouse_fw = parse_mouse_firmware_response(&mouse_fw_response);
+    println!("    Mouse Firmware: {}", mouse_fw);
+
+    // Command 0x1d - Receiver firmware version (wireless only has meaningful data)
+    let receiver_fw_response = send_and_receive(
+        &mut endpoint,
+        &interface,
+        &build_receiver_firmware_cmd(),
+        "Receiver Firmware",
+        mode,
+    )?;
+    let receiver_fw = parse_receiver_firmware_response(&receiver_fw_response, mode);
+    println!("    Receiver Firmware: {}", receiver_fw);
 
     // Command 0x03 - Status
     send_and_receive(
