@@ -5,7 +5,7 @@ use std::time::Duration;
 // You'll need to find these for your specific mouse
 // Use `lsusb` to find Vendor ID and Product ID
 const VENDOR_ID: u16 = 0x3554; // TODO: Replace with your mouse's VID
-                               // Supported Product IDs (preferred first)
+// Supported Product IDs (preferred first)
 const PRODUCT_IDS: [u16; 2] = [0xf5f6, 0xf5f7];
 
 const INTERFACE_NUM: u8 = 1; // Configuration interface (may need adjustment)
@@ -14,10 +14,23 @@ const INTERRUPT_EP_IN: u8 = 0x82; // Interrupt endpoint for responses
 const PID_WIRED: u16 = 0xf5f6;
 const PID_WIRELESS: u16 = 0xf5f7;
 
+// Max packet sizes for endpoint 0x82 (from USB descriptors)
+const PACKET_SIZE_WIRED: usize = 64;
+const PACKET_SIZE_WIRELESS: usize = 49;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ConnectionMode {
     Wired,    // PID 0xf5f6
     Wireless, // PID 0xf5f7
+}
+
+impl ConnectionMode {
+    fn packet_size(self) -> usize {
+        match self {
+            ConnectionMode::Wired => PACKET_SIZE_WIRED,
+            ConnectionMode::Wireless => PACKET_SIZE_WIRELESS,
+        }
+    }
 }
 
 /// Calculate checksum for command packet
@@ -148,7 +161,7 @@ fn poll_device_ready(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let cmd = build_firmware_cmd();
     let poll_count = match mode {
-        ConnectionMode::Wired => 5,    // Wired: 5 polls (from dump)
+        ConnectionMode::Wired => 1,    // Wired: 5 polls (from dump)
         ConnectionMode::Wireless => 1, // Wireless: single poll
     };
 
@@ -159,7 +172,7 @@ fn poll_device_ready(
         } else {
             "Firmware Version".to_string()
         };
-        last_response = send_and_receive(endpoint, interface, &cmd, &desc)?;
+        last_response = send_and_receive(endpoint, interface, &cmd, &desc, mode)?;
     }
     Ok(last_response)
 }
@@ -235,6 +248,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &interface,
         &build_device_info_cmd(0x0008, 0x28),
         "Device Info",
+        mode,
     )?;
 
     // Command 0x1d - Firmware version / ready poll
@@ -243,7 +257,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    Firmware: {}", fw_version);
 
     // Command 0x03 - Status
-    send_and_receive(&mut endpoint, &interface, &build_status_cmd(), "Status")?;
+    send_and_receive(
+        &mut endpoint,
+        &interface,
+        &build_status_cmd(),
+        "Status",
+        mode,
+    )?;
 
     // Command 0x02 - Config flags
     send_and_receive(
@@ -251,6 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &interface,
         &build_config_flags_cmd(0x0101),
         "Config Flags",
+        mode,
     )?;
 
     // Read another device info
@@ -259,6 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &interface,
         &build_device_info_cmd(0x0008, 0x00),
         "Device Info 2",
+        mode,
     )?;
 
     // Now read the full configuration memory
@@ -276,6 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &interface,
             &cmd,
             &format!("Memory 0x{:04X}", offset),
+            mode,
         ) {
             Ok(response) => {
                 // Extract data bytes (skip header, take 'length' bytes)
@@ -303,7 +326,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Query battery status
     println!("\n=== Battery Status ===\n");
-    send_and_receive(&mut endpoint, &interface, &build_battery_cmd(), "Battery")?;
+    send_and_receive(
+        &mut endpoint,
+        &interface,
+        &build_battery_cmd(),
+        "Battery",
+        mode,
+    )?;
 
     // Wireless-only: Query wireless status (0x17)
     if mode == ConnectionMode::Wireless {
@@ -313,6 +342,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &interface,
             &build_wireless_status_cmd(),
             "Wireless Status",
+            mode,
         )?;
     }
 
@@ -325,17 +355,18 @@ fn send_and_receive(
     interface: &nusb::Interface,
     cmd: &[u8; 17],
     description: &str,
+    mode: ConnectionMode,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     println!(">>> {} ", description);
     println!("    TX: {}", hex::encode(cmd));
 
     // Set up read buffer BEFORE sending command
     // This ensures we're listening when the device responds
-    // Note: EP 0x82 has max packet size of 49 bytes per USB descriptor
-    let mut response = [0u8; 49];
+    // Use mode-specific packet size from USB descriptors
+    let packet_size = mode.packet_size();
+    let mut response = vec![0u8; packet_size];
 
-    const PACKET_SIZE: usize = 49;
-    let buf = Buffer::new(PACKET_SIZE);
+    let buf = Buffer::new(packet_size);
     endpoint.submit(buf);
 
     // Now send command via control transfer
@@ -376,7 +407,7 @@ fn send_and_receive(
     for i in 0..3 {
         // Submit another buffer for next read
         if i > 0 {
-            let buf = Buffer::new(PACKET_SIZE);
+            let buf = Buffer::new(packet_size);
             endpoint.submit(buf);
         }
 
