@@ -67,6 +67,6 @@ async fn get_lod(backend: &dyn Backend) -> Result<()> {
 
 async fn get_sleep_timeout(backend: &dyn Backend) -> Result<()> {
     let config = backend.get_config().await?;
-    println!("{}", config.sleep_timeout_seconds);
+    println!("{}s", config.sleep_timeout_seconds);
     Ok(())
 }
