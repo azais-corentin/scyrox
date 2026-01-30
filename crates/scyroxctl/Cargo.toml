@@ -1,0 +1,20 @@
+[package]
+name = "scyroxctl"
+version.workspace = true
+edition.workspace = true
+description = "CLI tool for Scyrox mouse configuration"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+directories.workspace = true
+interprocess.workspace = true
+scyrox.workspace = true
+scyrox-proto.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait.workspace = true
+hyper-util.workspace = true

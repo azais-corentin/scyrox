@@ -1,0 +1,206 @@
+syntax = "proto3";
+package scyrox;
+
+// =============================================================================
+// Main Service
+// =============================================================================
+
+service Scyrox {
+  // Device status
+  rpc GetStatus(Empty) returns (DeviceStatus);
+  rpc GetBattery(Empty) returns (BatteryStatus);
+  rpc GetFirmware(Empty) returns (FirmwareInfo);
+  
+  // Configuration
+  rpc GetConfig(Empty) returns (MouseConfig);
+  rpc SetConfig(MouseConfig) returns (Empty);
+  
+  // Individual settings
+  rpc SetPollingRate(SetPollingRateRequest) returns (Empty);
+  rpc SetLiftOffDistance(SetLiftOffDistanceRequest) returns (Empty);
+  rpc SetSleepTimeout(SetSleepTimeoutRequest) returns (Empty);
+  rpc SetAngleSnapping(SetBoolRequest) returns (Empty);
+  rpc SetRippleControl(SetBoolRequest) returns (Empty);
+  rpc SetHighSpeedMode(SetBoolRequest) returns (Empty);
+  rpc SetLongDistanceMode(SetBoolRequest) returns (Empty);
+  
+  // Profiles
+  rpc ListProfiles(Empty) returns (ProfileList);
+  rpc GetProfile(GetProfileRequest) returns (Profile);
+  rpc CreateProfile(CreateProfileRequest) returns (Profile);
+  rpc UpdateProfile(UpdateProfileRequest) returns (Profile);
+  rpc DeleteProfile(DeleteProfileRequest) returns (Empty);
+  rpc ApplyProfile(ApplyProfileRequest) returns (Empty);
+  rpc SetDefaultProfile(SetDefaultProfileRequest) returns (Empty);
+  
+  // Event streaming
+  rpc WatchEvents(Empty) returns (stream Event);
+  
+  // Daemon management
+  rpc GetDaemonInfo(Empty) returns (DaemonInfo);
+  rpc Shutdown(Empty) returns (Empty);
+}
+
+// =============================================================================
+// Common Types
+// =============================================================================
+
+message Empty {}
+
+enum PollingRate {
+  POLLING_RATE_UNSPECIFIED = 0;
+  POLLING_RATE_125 = 1;
+  POLLING_RATE_250 = 2;
+  POLLING_RATE_500 = 3;
+  POLLING_RATE_1000 = 4;
+  POLLING_RATE_2000 = 5;
+  POLLING_RATE_4000 = 6;
+  POLLING_RATE_8000 = 7;
+}
+
+enum LiftOffDistance {
+  LIFT_OFF_DISTANCE_UNSPECIFIED = 0;
+  LIFT_OFF_DISTANCE_LOW = 1;   // 0.7mm
+  LIFT_OFF_DISTANCE_MEDIUM = 2; // 1.0mm
+  LIFT_OFF_DISTANCE_HIGH = 3;   // 2.0mm
+}
+
+enum ConnectionMode {
+  CONNECTION_MODE_UNSPECIFIED = 0;
+  CONNECTION_MODE_WIRED = 1;
+  CONNECTION_MODE_WIRELESS = 2;
+}
+
+// =============================================================================
+// Device Status & Info
+// =============================================================================
+
+message DeviceStatus {
+  bool connected = 1;
+  ConnectionMode connection_mode = 2;
+}
+
+message BatteryStatus {
+  uint32 voltage_mv = 1;
+  uint32 percentage = 2;
+}
+
+message FirmwareInfo {
+  string mouse_version = 1;
+  optional string receiver_version = 2;
+}
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+message MouseConfig {
+  PollingRate polling_rate = 1;
+  LiftOffDistance lift_off_distance = 2;
+  uint32 sleep_timeout_seconds = 3;
+  bool angle_snapping = 4;
+  bool ripple_control = 5;
+  bool high_speed_mode = 6;
+  bool long_distance_mode = 7;
+}
+
+message SetPollingRateRequest {
+  PollingRate rate = 1;
+}
+
+message SetLiftOffDistanceRequest {
+  LiftOffDistance distance = 1;
+}
+
+message SetSleepTimeoutRequest {
+  uint32 seconds = 1;
+}
+
+message SetBoolRequest {
+  bool enabled = 1;
+}
+
+// =============================================================================
+// Profiles
+// =============================================================================
+
+message Profile {
+  string id = 1;
+  string name = 2;
+  MouseConfig config = 3;
+  bool is_default = 4;
+}
+
+message ProfileList {
+  repeated Profile profiles = 1;
+}
+
+message GetProfileRequest {
+  string id = 1;
+}
+
+message CreateProfileRequest {
+  string name = 1;
+  MouseConfig config = 2;
+  bool set_as_default = 3;
+}
+
+message UpdateProfileRequest {
+  string id = 1;
+  optional string name = 2;
+  optional MouseConfig config = 3;
+}
+
+message DeleteProfileRequest {
+  string id = 1;
+}
+
+message ApplyProfileRequest {
+  string id = 1;
+}
+
+message SetDefaultProfileRequest {
+  string id = 1;
+}
+
+// =============================================================================
+// Events (for streaming)
+// =============================================================================
+
+message Event {
+  oneof event {
+    BatteryUpdate battery_update = 1;
+    ConnectionChange connection_change = 2;
+    LowBatteryAlert low_battery_alert = 3;
+    ProfileApplied profile_applied = 4;
+  }
+}
+
+message BatteryUpdate {
+  BatteryStatus status = 1;
+}
+
+message ConnectionChange {
+  bool connected = 1;
+  ConnectionMode mode = 2;
+}
+
+message LowBatteryAlert {
+  uint32 percentage = 1;
+}
+
+message ProfileApplied {
+  string profile_id = 1;
+  string profile_name = 2;
+}
+
+// =============================================================================
+// Daemon Info
+// =============================================================================
+
+message DaemonInfo {
+  string version = 1;
+  uint64 uptime_seconds = 2;
+  DeviceStatus device_status = 3;
+  optional string active_profile_id = 4;
+}

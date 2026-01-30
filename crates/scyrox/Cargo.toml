@@ -1,0 +1,11 @@
+[package]
+name = "scyrox"
+version.workspace = true
+edition.workspace = true
+description = "Core library for Scyrox mouse USB/HID communication"
+
+[dependencies]
+hex.workspace = true
+nusb.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

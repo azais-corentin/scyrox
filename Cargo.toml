@@ -1,10 +1,57 @@
-[package]
-name = "scyroxd"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/yourusername/scyrox"
 
-[dependencies]
-hex = "0.4.3"
+[workspace.dependencies]
+# Internal crates
+scyrox = { path = "crates/scyrox" }
+scyrox-proto = { path = "crates/scyrox-proto" }
+scyroxd = { path = "crates/scyroxd" }
+scyroxctl = { path = "crates/scyroxctl" }
+
+# Async runtime
+tokio = { version = "1.49.0", features = ["full"] }
+tokio-stream = "0.1"
+async-stream = "0.3.6"
+
+# gRPC
+tonic = "0.14.3"
+tonic-prost-build = "0.14.3"
+tonic-prost = "0.14.3"
+prost = "0.14.3"
+
+# IPC
+interprocess = { version = "2.2.3", features = ["tokio"] }
+
+# USB
 nusb = "0.2.1"
+
+# CLI
+clap = { version = "4.5.56", features = ["derive"] }
+
+# Error handling
 thiserror = "2.0.18"
+anyhow = "1.0.100"
+
+# Serialization
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "0.9.8"
+
+# Logging
 tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+
+# Utilities
+async-trait = "0.1"
+directories = "6.0.0"
+hex = "0.4.3"
+hyper-util = { version = "0.1", features = ["tokio"] }
+pin-project-lite = "0.2"
+tower = "0.5"

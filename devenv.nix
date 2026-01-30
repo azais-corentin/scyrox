@@ -14,6 +14,7 @@
   packages = with pkgs; [
     pkg-config
     libusb1
+    protobuf
   ];
 
   # https://devenv.sh/languages/

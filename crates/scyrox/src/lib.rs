@@ -6,9 +6,9 @@
 //! # Example
 //!
 //! ```no_run
-//! use scyroxd::{Mouse, PollingRate};
+//! use scyrox::{Mouse, PollingRate};
 //!
-//! fn main() -> scyroxd::Result<()> {
+//! fn main() -> scyrox::Result<()> {
 //!     let mut mouse = Mouse::open()?;
 //!
 //!     // Read current configuration
