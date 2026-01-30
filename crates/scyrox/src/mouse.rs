@@ -90,9 +90,12 @@ impl Mouse {
     // =========================================================================
 
     /// Send a command and receive the response.
+    ///
+    /// The protocol uses single-packet request/response. Each command
+    /// receives exactly one 16-byte response packet (17 bytes with report ID).
     #[instrument(skip(self, cmd))]
     fn send_command(&mut self, cmd: &[u8; PACKET_LENGTH]) -> Result<Vec<u8>> {
-        trace!(cmd = ?cmd, "sending command");
+        trace!(?cmd, "sending command");
         let packet_size = self.mode.packet_size();
 
         // Prepend report ID to command packet for HID transfer
@@ -100,7 +103,7 @@ impl Mouse {
         report[0] = REPORT_ID;
         report[1..].copy_from_slice(cmd);
 
-        // Submit read buffer BEFORE sending command
+        // Submit read buffer BEFORE sending command (required for interrupt endpoints)
         let buf = Buffer::new(packet_size);
         self.endpoint.submit(buf);
 
@@ -122,7 +125,6 @@ impl Mouse {
 
         if result.is_err() {
             warn!("control transfer with Class request failed, trying Vendor request");
-            // Try alternative: vendor-specific transfer
             self.interface
                 .control_out(
                     ControlOut {
@@ -138,50 +140,33 @@ impl Mouse {
                 .wait()?;
         }
 
-        // Wait for response with longer timeout
-        let mut response = vec![0u8; packet_size];
-        let mut bytes_read = 0;
-
-        for i in 0..3 {
-            if i > 0 {
-                trace!(attempt = i + 1, "retrying response read");
-                let buf = Buffer::new(packet_size);
-                self.endpoint.submit(buf);
-            }
-
-            match self.endpoint.wait_next_complete(Duration::from_millis(200)) {
-                Some(completion) => {
-                    if completion.status.is_ok() {
-                        let len = completion.buffer.len();
-                        if len > 0 {
-                            let copy_len = len.min(response.len());
-                            response[..copy_len].copy_from_slice(&completion.buffer[..copy_len]);
-                            bytes_read = copy_len;
-                            trace!(bytes_read, "received response data");
-                        }
-                    } else {
-                        trace!(?completion.status, "completion status not ok");
-                        break;
-                    }
+        // Wait for single response packet
+        let Some(completion) = self.endpoint.wait_next_complete(Duration::from_millis(200)) else {
+            return Err(match self.mode {
+                ConnectionMode::Wireless => {
+                    debug!("timeout waiting for response - mouse may be sleeping");
+                    MouseError::DeviceOffline
                 }
-                None => {
-                    if i == 0 {
-                        error!("timeout waiting for response on first attempt");
-                        return Err(MouseError::Timeout);
-                    }
-                    trace!(attempt = i + 1, "no more data available");
-                    break;
+                ConnectionMode::Wired => {
+                    error!("timeout waiting for response");
+                    MouseError::Timeout
                 }
-            }
+            });
+        };
+
+        if !completion.status.is_ok() {
+            error!(?completion.status, "USB transfer failed");
+            return Err(MouseError::Timeout);
         }
 
+        let bytes_read = completion.buffer.len();
         if bytes_read == 0 {
-            error!("no response data received after all attempts");
+            error!("empty response received");
             return Err(MouseError::Timeout);
         }
 
         debug!(bytes_read, "command completed successfully");
-        Ok(response[..bytes_read].to_vec())
+        Ok(completion.buffer[..bytes_read].to_vec())
     }
 
     /// Send a status command (used before writes to sync with device).
