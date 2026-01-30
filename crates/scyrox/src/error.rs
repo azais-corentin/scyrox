@@ -29,6 +29,22 @@ pub enum MouseError {
     #[error("Invalid sleep timeout: {0} seconds (max 2550)")]
     InvalidSleepTimeout(u16),
 
+    /// Invalid DPI stage index (must be 0-7).
+    #[error("Invalid DPI stage: {0} (must be 0-7)")]
+    InvalidDpiStage(u8),
+
+    /// Invalid DPI value (must be 50-26000 in steps of 50).
+    #[error("Invalid DPI value: {0} (must be 50-26000)")]
+    InvalidDpiValue(u16),
+
+    /// Invalid debounce time (must be 0-30 ms).
+    #[error("Invalid debounce time: {0} ms (must be 0-30)")]
+    InvalidDebounceTime(u8),
+
+    /// Invalid profile index (must be 0-3).
+    #[error("Invalid profile: {0} (must be 0-3)")]
+    InvalidProfile(u8),
+
     /// Timeout waiting for device response.
     #[error("Communication timeout")]
     Timeout,
@@ -40,6 +56,14 @@ pub enum MouseError {
     /// Response contains insufficient data.
     #[error("Insufficient data: need {need} bytes, got {got}")]
     InsufficientData { need: usize, got: usize },
+
+    /// Command not supported by device.
+    #[error("Command not supported")]
+    NotSupported,
+
+    /// Device is offline (wireless mouse not connected to dongle).
+    #[error("Device offline")]
+    DeviceOffline,
 }
 
 /// Result type alias using MouseError.

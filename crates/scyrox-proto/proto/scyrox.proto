@@ -83,6 +83,7 @@ message DeviceStatus {
 message BatteryStatus {
   uint32 voltage_mv = 1;
   uint32 percentage = 2;
+  bool charging = 3;
 }
 
 message FirmwareInfo {

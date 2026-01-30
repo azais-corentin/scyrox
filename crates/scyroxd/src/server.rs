@@ -27,11 +27,17 @@ pub struct ScyroxService {
     config: DaemonConfig,
     /// Daemon start time.
     start_time: Instant,
+    /// Currently active profile ID (the profile last applied to the mouse).
+    active_profile_id: Arc<Mutex<Option<String>>>,
+    /// Shutdown signal sender.
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
 impl ScyroxService {
     /// Create a new service instance.
-    pub fn new(config: DaemonConfig, dirs: ProjectDirs) -> Result<Self> {
+    ///
+    /// Returns the service and a receiver that will be notified when shutdown is requested.
+    pub fn new(config: DaemonConfig, dirs: ProjectDirs) -> Result<(Self, tokio::sync::watch::Receiver<bool>)> {
         // Try to open the mouse, but don't fail if not connected
         let mouse = match Mouse::open() {
             Ok(m) => {
@@ -44,12 +50,17 @@ impl ScyroxService {
             }
         };
 
-        Ok(Self {
+        // Create shutdown channel
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        Ok((Self {
             mouse: Arc::new(Mutex::new(mouse)),
             profiles: ProfileStore::new(&dirs),
             config,
             start_time: Instant::now(),
-        })
+            active_profile_id: Arc::new(Mutex::new(None)),
+            shutdown_tx,
+        }, shutdown_rx))
     }
 
     /// Ensure mouse is connected, attempting to reconnect if needed.
@@ -113,6 +124,7 @@ impl Scyrox for ScyroxService {
         Ok(Response::new(BatteryStatus {
             voltage_mv: battery.voltage_mv as u32,
             percentage: battery.percentage as u32,
+            charging: battery.charging,
         }))
     }
 
@@ -440,6 +452,12 @@ impl Scyrox for ScyroxService {
             .set_config(&config)
             .map_err(|e| Status::internal(format!("Failed to apply profile: {}", e)))?;
 
+        // Track the active profile ID
+        {
+            let mut active_profile = self.active_profile_id.lock().await;
+            *active_profile = Some(id.clone());
+        }
+
         info!(id, "Profile applied");
         Ok(Response::new(Empty {}))
     }
@@ -496,6 +514,9 @@ impl Scyrox for ScyroxService {
             None => (false, ConnectionMode::Unspecified as i32),
         };
 
+        // Get the currently active profile ID
+        let active_profile_id = self.active_profile_id.lock().await.clone();
+
         Ok(Response::new(DaemonInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             uptime_seconds: self.start_time.elapsed().as_secs(),
@@ -503,15 +524,16 @@ impl Scyrox for ScyroxService {
                 connected,
                 connection_mode: mode,
             }),
-            active_profile_id: None, // TODO: Track active profile
+            active_profile_id,
         }))
     }
 
     #[instrument(skip(self, _request))]
     async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
-        info!("Shutdown requested");
-        // TODO: Graceful shutdown
-        std::process::exit(0);
+        info!("Shutdown requested via RPC");
+        // Signal shutdown to the main loop
+        let _ = self.shutdown_tx.send(true);
+        Ok(Response::new(Empty {}))
     }
 }
 
@@ -540,6 +562,13 @@ fn convert_proto_to_config(proto: &MouseConfig) -> Result<scyrox::MouseConfig, S
         ripple_control: proto.ripple_control,
         high_speed_mode: proto.high_speed_mode,
         long_distance_mode: proto.long_distance_mode,
+        // Additional fields use sensible defaults
+        debounce_time: 0,
+        motion_sync: false,
+        moving_off_light_time: 0,
+        performance_time: scyrox::SleepTime::Min1,
+        sensor_mode: scyrox::SensorMode::HighPerformance,
+        sensor_20k: false,
     })
 }
 
@@ -630,6 +659,13 @@ fn profile_config_to_mouse_config(
         ripple_control: config.ripple_control,
         high_speed_mode: config.high_speed_mode,
         long_distance_mode: config.long_distance_mode,
+        // Additional fields use sensible defaults
+        debounce_time: 0,
+        motion_sync: false,
+        moving_off_light_time: 0,
+        performance_time: scyrox::SleepTime::Min1,
+        sensor_mode: scyrox::SensorMode::HighPerformance,
+        sensor_20k: false,
     })
 }
 

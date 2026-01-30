@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
-use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate};
+use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate, SensorMode, SleepTime};
 use scyrox_proto::scyrox_client::ScyroxClient;
 use scyrox_proto::*;
 
@@ -79,6 +79,7 @@ impl Backend for DaemonClient {
         Ok(BatteryStatus {
             voltage_mv: response.voltage_mv as u16,
             percentage: response.percentage as u8,
+            charging: response.charging,
         })
     }
 
@@ -262,6 +263,13 @@ fn proto_to_config(proto: &scyrox_proto::MouseConfig) -> Result<MouseConfig> {
         ripple_control: proto.ripple_control,
         high_speed_mode: proto.high_speed_mode,
         long_distance_mode: proto.long_distance_mode,
+        // Additional fields use sensible defaults
+        debounce_time: 0,
+        motion_sync: false,
+        moving_off_light_time: 0,
+        performance_time: SleepTime::Min1,
+        sensor_mode: SensorMode::HighPerformance,
+        sensor_20k: false,
     })
 }
 

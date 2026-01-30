@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
     }
 
     // Create the gRPC service
-    let service = ScyroxService::new(config, dirs)?;
+    let (service, mut shutdown_rx) = ScyroxService::new(config, dirs)?;
 
     // Bind to Unix socket
     info!(?socket_path, "Binding to socket");
@@ -141,12 +141,31 @@ async fn main() -> Result<()> {
 
     info!("Daemon ready, accepting connections");
 
-    // Run the gRPC server
-    Server::builder()
+    // Run the gRPC server with graceful shutdown
+    let server = Server::builder()
         .add_service(ScyroxServer::new(service))
-        .serve_with_incoming(incoming)
-        .await?;
+        .serve_with_incoming_shutdown(incoming, async move {
+            // Wait for shutdown signal from RPC or Ctrl+C
+            tokio::select! {
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        info!("Shutdown signal received");
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Ctrl+C received, shutting down");
+                }
+            }
+        });
 
+    server.await?;
+
+    // Cleanup: remove socket file
+    if socket_path.exists() {
+        let _ = fs::remove_file(&socket_path).await;
+    }
+
+    info!("Daemon stopped");
     Ok(())
 }
 

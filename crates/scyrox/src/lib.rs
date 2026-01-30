@@ -29,7 +29,16 @@ pub mod types;
 
 // Re-export main types at crate root for convenience
 pub use error::{MouseError, Result};
-pub use mouse::Mouse;
+pub use mouse::{Mouse, KEY_FUNCTION_COUNT, MACRO_COUNT, SHORTCUT_KEY_COUNT};
+pub use protocol::{
+    is_status_changed_notification, parse_status_changed_notification, validate_response,
+    verify_response_checksum,
+};
 pub use types::{
-    BatteryStatus, ConnectionMode, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate,
+    BatteryStatus, ConnectionMode, ConnectionType, DeviceInfo, DpiEffectMode, DpiEffectSettings,
+    DpiStage, DpiSwitchMode, FireKeyConfig, FirmwareInfo, HidKeyCode, KeyFunction, KeyFunctionType,
+    LiftOffDistance, LightMode, LightSettings, Macro, MacroCycleMode, MacroEvent,
+    MacroEventKeyType, MacroKeyConfig, MacroMouseButton, MediaKey, ModifierKey, MouseButton,
+    MouseConfig, PairStatus, PollingRate, ScrollWheelDirection, SensorMode, ShortcutKey,
+    ShortcutKeyEvent, ShortcutKeyType, SleepTime, StatusChangeFlags,
 };
