@@ -15,6 +15,7 @@ This document provides a complete technical specification of the HID communicati
     - [USB Identifiers](#usb-identifiers)
     - [Device Variants](#device-variants)
     - [Connection Type Detection](#connection-type-detection)
+    - [Dual Connection Behavior](#dual-connection-behavior)
   - [2. HID Report Configuration](#2-hid-report-configuration)
     - [Report Parameters](#report-parameters)
     - [HID Collection Selection](#hid-collection-selection)
@@ -107,6 +108,10 @@ The `type` field in the handshake response indicates connection type:
 | 3          | Wired (high-speed)   | 8000 Hz          |
 | 4          | Wireless (2K dongle) | 2000 Hz          |
 | 5          | Wireless (8K dongle) | 8000 Hz          |
+
+### Dual Connection Behavior
+
+When the mouse is connected via both wired and wireless interfaces simultaneously, the wired connection takes priority. The wireless interface becomes inaccessible and the device appears offline (sleeping) through the dongle, while operating normally through the wired connection.
 
 ---
 
