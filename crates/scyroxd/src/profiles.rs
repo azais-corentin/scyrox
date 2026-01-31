@@ -35,6 +35,7 @@ pub struct ProfileConfig {
 }
 
 /// Profile storage manager.
+#[derive(Clone)]
 pub struct ProfileStore {
     profiles_dir: PathBuf,
 }

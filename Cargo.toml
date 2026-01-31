@@ -18,7 +18,7 @@ scyroxd = { path = "crates/scyroxd" }
 # Async runtime
 async-stream = "0.3.6"
 tokio = { version = "1.49.0", features = ["full"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # gRPC
 prost = "0.14.3"
@@ -30,7 +30,7 @@ tonic-prost-build = "0.14.3"
 interprocess = { version = "2.2.3", features = ["tokio"] }
 
 # USB
-nusb = "0.2.1"
+nusb = { version = "0.2.1", features = ["tokio"] }
 
 # CLI
 clap = { version = "4.5.56", features = ["derive"] }

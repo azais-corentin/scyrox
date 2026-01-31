@@ -15,7 +15,7 @@ pub enum MouseError {
 
     /// USB transfer error.
     #[error("USB transfer error: {0}")]
-    Transfer(#[from] nusb::transfer::TransferError),
+    Transfer(nusb::transfer::TransferError),
 
     /// Invalid polling rate byte value.
     #[error("Invalid polling rate value: 0x{0:02x}")]
@@ -64,6 +64,10 @@ pub enum MouseError {
     /// Device is offline (wireless mouse not connected to dongle).
     #[error("Device offline")]
     DeviceOffline,
+
+    /// Device was disconnected during communication.
+    #[error("Mouse disconnected. Please reconnect the device.")]
+    Disconnected,
 }
 
 /// Result type alias using MouseError.

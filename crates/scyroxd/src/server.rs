@@ -6,15 +6,17 @@ use std::time::Instant;
 
 use anyhow::Result;
 use directories::ProjectDirs;
-use tokio::sync::Mutex;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::{Mutex, broadcast};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status};
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
-use scyrox::Mouse;
+use scyrox::{Mouse, MouseError};
 use scyrox_proto::*;
 
 use crate::config::DaemonConfig;
+use crate::hotplug::DeviceEvent;
 use crate::profiles::{ProfileConfig, ProfileStore};
 
 /// The gRPC service implementation.
@@ -31,16 +33,24 @@ pub struct ScyroxService {
     active_profile_id: Arc<Mutex<Option<String>>>,
     /// Shutdown signal sender.
     shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Sender for client events (watch_events subscribers).
+    client_event_tx: broadcast::Sender<Event>,
 }
 
 impl ScyroxService {
     /// Create a new service instance.
     ///
-    /// Returns the service and a receiver that will be notified when shutdown is requested.
+    /// Returns the service, a shutdown receiver, and a device event receiver to be processed
+    /// by a background task.
     pub fn new(
         config: DaemonConfig,
         dirs: ProjectDirs,
-    ) -> Result<(Self, tokio::sync::watch::Receiver<bool>)> {
+        device_event_rx: broadcast::Receiver<DeviceEvent>,
+    ) -> Result<(
+        Self,
+        tokio::sync::watch::Receiver<bool>,
+        broadcast::Receiver<DeviceEvent>,
+    )> {
         // Try to open the mouse, but don't fail if not connected
         let mouse = match Mouse::open() {
             Ok(m) => {
@@ -56,6 +66,9 @@ impl ScyroxService {
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+        // Create client event broadcast channel
+        let (client_event_tx, _) = broadcast::channel(32);
+
         Ok((
             Self {
                 mouse: Arc::new(Mutex::new(mouse)),
@@ -64,8 +77,10 @@ impl ScyroxService {
                 start_time: Instant::now(),
                 active_profile_id: Arc::new(Mutex::new(None)),
                 shutdown_tx,
+                client_event_tx,
             },
             shutdown_rx,
+            device_event_rx,
         ))
     }
 
@@ -79,11 +94,262 @@ impl ScyroxService {
                     *guard = Some(m);
                 }
                 Err(e) => {
-                    return Err(Status::unavailable(format!("Mouse not connected: {}", e)));
+                    return Err(Status::unavailable(format!(
+                        "Mouse not connected. Please connect the device.: {}",
+                        e
+                    )));
                 }
             }
         }
         Ok(())
+    }
+
+    /// Invalidate the current mouse connection.
+    ///
+    /// Called when we detect the device has been disconnected.
+    pub async fn invalidate_mouse(&self) {
+        let mut guard = self.mouse.lock().await;
+        if guard.is_some() {
+            debug!("invalidating mouse connection");
+            *guard = None;
+        }
+    }
+
+    /// Convert a mouse error to a gRPC Status with user-friendly messages.
+    ///
+    /// Returns `Some(Status)` if the error indicates disconnection and the
+    /// mouse connection should be invalidated.
+    fn mouse_error_to_status(e: scyrox::MouseError, operation: &str) -> (Status, bool) {
+        match e {
+            MouseError::Disconnected => (
+                Status::unavailable("Mouse disconnected. Please reconnect the device."),
+                true, // Should invalidate
+            ),
+            MouseError::DeviceOffline => (
+                Status::unavailable(
+                    "Mouse is sleeping or out of range. Move the mouse to wake it up.",
+                ),
+                false,
+            ),
+            other => (
+                Status::internal(format!("Failed to {}: {}", operation, other)),
+                false,
+            ),
+        }
+    }
+
+    /// Handle a mouse error, invalidating the connection if needed.
+    async fn handle_mouse_error(&self, e: scyrox::MouseError, operation: &str) -> Status {
+        let (status, should_invalidate) = Self::mouse_error_to_status(e, operation);
+
+        if should_invalidate {
+            self.invalidate_mouse().await;
+            // Broadcast disconnection event
+            let _ = self.client_event_tx.send(Event {
+                event: Some(event::Event::ConnectionChange(ConnectionChange {
+                    connected: false,
+                    mode: ConnectionMode::Unspecified as i32,
+                })),
+            });
+        }
+
+        status
+    }
+
+    /// Create a device event handler that can be spawned as a background task.
+    ///
+    /// Returns a future that processes device events.
+    pub fn create_device_event_handler(
+        &self,
+        mut rx: broadcast::Receiver<DeviceEvent>,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mouse = Arc::clone(&self.mouse);
+        let active_profile_id = Arc::clone(&self.active_profile_id);
+        let client_event_tx = self.client_event_tx.clone();
+        let profiles = self.profiles.clone();
+        let config = self.config.clone();
+
+        async move {
+            info!("device event handler started");
+
+            while let Ok(event) = rx.recv().await {
+                match event {
+                    DeviceEvent::Connected { mode } => {
+                        info!(?mode, "device connected");
+
+                        // Try to open the mouse
+                        match Mouse::open() {
+                            Ok(m) => {
+                                let mut guard = mouse.lock().await;
+                                *guard = Some(m);
+                                info!("mouse connection established");
+
+                                // Broadcast connection event
+                                let proto_mode = match mode {
+                                    scyrox::ConnectionMode::Wired => ConnectionMode::Wired,
+                                    scyrox::ConnectionMode::Wireless => ConnectionMode::Wireless,
+                                };
+                                let _ = client_event_tx.send(Event {
+                                    event: Some(event::Event::ConnectionChange(ConnectionChange {
+                                        connected: true,
+                                        mode: proto_mode as i32,
+                                    })),
+                                });
+
+                                // Auto-apply last active profile or default
+                                auto_apply_profile(
+                                    &mouse,
+                                    &active_profile_id,
+                                    &client_event_tx,
+                                    &profiles,
+                                    &config,
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                warn!("failed to open mouse after connection event: {}", e);
+                            }
+                        }
+                    }
+                    DeviceEvent::Disconnected => {
+                        info!("device disconnected");
+
+                        // Invalidate mouse connection
+                        {
+                            let mut guard = mouse.lock().await;
+                            if guard.is_some() {
+                                debug!("invalidating mouse connection");
+                                *guard = None;
+                            }
+                        }
+
+                        // Broadcast disconnection event
+                        let _ = client_event_tx.send(Event {
+                            event: Some(event::Event::ConnectionChange(ConnectionChange {
+                                connected: false,
+                                mode: ConnectionMode::Unspecified as i32,
+                            })),
+                        });
+                    }
+                    DeviceEvent::ModeChanged { from, to } => {
+                        info!(?from, ?to, "connection mode changed");
+
+                        // Drop the old connection
+                        {
+                            let mut guard = mouse.lock().await;
+                            *guard = None;
+                        }
+
+                        // Open new connection
+                        match Mouse::open() {
+                            Ok(m) => {
+                                let mut guard = mouse.lock().await;
+                                *guard = Some(m);
+                                info!(?to, "mouse reconnected in new mode");
+
+                                // Broadcast mode change as connection event
+                                let proto_mode = match to {
+                                    scyrox::ConnectionMode::Wired => ConnectionMode::Wired,
+                                    scyrox::ConnectionMode::Wireless => ConnectionMode::Wireless,
+                                };
+                                let _ = client_event_tx.send(Event {
+                                    event: Some(event::Event::ConnectionChange(ConnectionChange {
+                                        connected: true,
+                                        mode: proto_mode as i32,
+                                    })),
+                                });
+
+                                // Re-apply last active profile
+                                auto_apply_profile(
+                                    &mouse,
+                                    &active_profile_id,
+                                    &client_event_tx,
+                                    &profiles,
+                                    &config,
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                warn!("failed to open mouse after mode change: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            warn!("device event receiver closed");
+        }
+    }
+}
+
+/// Auto-apply the last active profile or default profile on reconnection.
+async fn auto_apply_profile(
+    mouse: &Arc<Mutex<Option<Mouse>>>,
+    active_profile_id: &Arc<Mutex<Option<String>>>,
+    client_event_tx: &broadcast::Sender<Event>,
+    profiles: &ProfileStore,
+    config: &DaemonConfig,
+) {
+    if !config.auto_apply_on_connect {
+        debug!("auto-apply disabled in config");
+        return;
+    }
+
+    // First try the last active profile
+    let profile_id = {
+        let active = active_profile_id.lock().await;
+        active.clone()
+    };
+
+    // Fall back to default profile from config
+    let profile_id = profile_id.or_else(|| config.default_profile_id.clone());
+
+    let Some(profile_id) = profile_id else {
+        debug!("no profile to auto-apply");
+        return;
+    };
+
+    // Load and apply the profile
+    match profiles.get(&profile_id).await {
+        Ok(profile) => {
+            match profile_config_to_mouse_config(&profile.config) {
+                Ok(mouse_config) => {
+                    let mut guard = mouse.lock().await;
+                    if let Some(m) = guard.as_mut() {
+                        match m.set_config(&mouse_config) {
+                            Ok(()) => {
+                                info!(
+                                    profile_id = profile_id,
+                                    profile_name = profile.name,
+                                    "auto-applied profile"
+                                );
+                                // Update active profile ID
+                                drop(guard);
+                                let mut active = active_profile_id.lock().await;
+                                *active = Some(profile_id.clone());
+
+                                // Broadcast profile applied event
+                                let _ = client_event_tx.send(Event {
+                                    event: Some(event::Event::ProfileApplied(ProfileApplied {
+                                        profile_id,
+                                        profile_name: profile.name,
+                                    })),
+                                });
+                            }
+                            Err(e) => {
+                                warn!("failed to auto-apply profile: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("failed to convert profile config: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            warn!(profile_id = profile_id, "failed to load profile: {}", e);
+        }
     }
 }
 
@@ -123,9 +389,13 @@ impl Scyrox for ScyroxService {
         let mut guard = self.mouse.lock().await;
         let mouse = guard.as_mut().unwrap();
 
-        let battery = mouse
-            .get_battery()
-            .map_err(|e| Status::internal(format!("Failed to read battery: {}", e)))?;
+        let battery = match mouse.get_battery() {
+            Ok(b) => b,
+            Err(e) => {
+                drop(guard);
+                return Err(self.handle_mouse_error(e, "read battery").await);
+            }
+        };
 
         Ok(Response::new(BatteryStatus {
             voltage_mv: battery.voltage_mv as u32,
@@ -165,9 +435,13 @@ impl Scyrox for ScyroxService {
         let mut guard = self.mouse.lock().await;
         let mouse = guard.as_mut().unwrap();
 
-        let config = mouse
-            .get_config()
-            .map_err(|e| Status::internal(format!("Failed to read config: {}", e)))?;
+        let config = match mouse.get_config() {
+            Ok(c) => c,
+            Err(e) => {
+                drop(guard);
+                return Err(self.handle_mouse_error(e, "read config").await);
+            }
+        };
 
         Ok(Response::new(convert_config_to_proto(&config)))
     }
@@ -182,9 +456,10 @@ impl Scyrox for ScyroxService {
         let mut guard = self.mouse.lock().await;
         let mouse = guard.as_mut().unwrap();
 
-        mouse
-            .set_config(&config)
-            .map_err(|e| Status::internal(format!("Failed to set config: {}", e)))?;
+        if let Err(e) = mouse.set_config(&config) {
+            drop(guard);
+            return Err(self.handle_mouse_error(e, "set config").await);
+        }
 
         info!("Configuration updated");
         Ok(Response::new(Empty {}))
@@ -454,9 +729,10 @@ impl Scyrox for ScyroxService {
         let mut guard = self.mouse.lock().await;
         let mouse = guard.as_mut().unwrap();
 
-        mouse
-            .set_config(&config)
-            .map_err(|e| Status::internal(format!("Failed to apply profile: {}", e)))?;
+        if let Err(e) = mouse.set_config(&config) {
+            drop(guard);
+            return Err(self.handle_mouse_error(e, "apply profile").await);
+        }
 
         // Track the active profile ID
         {
@@ -495,8 +771,18 @@ impl Scyrox for ScyroxService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::WatchEventsStream>, Status> {
-        let (_tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Status>>(4);
-        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+        let rx = self.client_event_tx.subscribe();
+
+        // Convert broadcast receiver to a stream of Result<Event, Status>
+        let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+            Ok(event) => Some(Ok(event)),
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                warn!(skipped = n, "client lagged behind, skipped events");
+                None
+            }
+        });
+
+        Ok(Response::new(Box::pin(stream)))
     }
 
     // =========================================================================

@@ -31,7 +31,15 @@ pub mod types;
 pub use error::{MouseError, Result};
 pub use mouse::{KEY_FUNCTION_COUNT, MACRO_COUNT, Mouse, SHORTCUT_KEY_COUNT};
 pub use protocol::{
-    is_status_changed_notification, parse_status_changed_notification, validate_response,
+    // USB device identifiers (for hotplug detection)
+    PID_WIRED,
+    PID_WIRELESS_4K,
+    PID_WIRELESS_STD,
+    PRODUCT_IDS,
+    VENDOR_ID,
+    is_status_changed_notification,
+    parse_status_changed_notification,
+    validate_response,
     verify_response_checksum,
 };
 pub use types::{

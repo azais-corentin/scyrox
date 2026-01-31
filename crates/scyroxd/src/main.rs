@@ -9,6 +9,7 @@
 //! - Auto-apply profiles on device connection
 
 mod config;
+mod hotplug;
 mod profiles;
 mod server;
 
@@ -32,6 +33,7 @@ use tracing_subscriber::EnvFilter;
 use scyrox_proto::ScyroxServer;
 
 use crate::config::DaemonConfig;
+use crate::hotplug::HotplugMonitor;
 use crate::server::ScyroxService;
 
 /// Default socket name within the runtime directory.
@@ -118,8 +120,17 @@ async fn main() -> Result<()> {
         fs::remove_file(&socket_path).await?;
     }
 
+    // Start the hotplug monitor
+    let (_hotplug_monitor, device_event_rx) = HotplugMonitor::start()?;
+    info!("Hotplug monitor started");
+
     // Create the gRPC service
-    let (service, mut shutdown_rx) = ScyroxService::new(config, dirs)?;
+    let (service, mut shutdown_rx, device_event_rx) =
+        ScyroxService::new(config, dirs, device_event_rx)?;
+
+    // Spawn the device event handler task
+    let event_handler = service.create_device_event_handler(device_event_rx);
+    tokio::spawn(event_handler);
 
     // Bind to Unix socket
     info!(?socket_path, "Binding to socket");

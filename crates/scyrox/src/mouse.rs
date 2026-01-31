@@ -10,6 +10,14 @@ use crate::error::{MouseError, Result};
 use crate::protocol::*;
 use crate::types::*;
 
+/// Convert a TransferError to the appropriate MouseError.
+fn transfer_error_to_mouse_error(error: nusb::transfer::TransferError) -> MouseError {
+    match error {
+        nusb::transfer::TransferError::Disconnected => MouseError::Disconnected,
+        other => MouseError::Transfer(other),
+    }
+}
+
 /// Maximum number of key function slots.
 pub const KEY_FUNCTION_COUNT: usize = 8;
 
@@ -123,7 +131,13 @@ impl Mouse {
             )
             .wait();
 
-        if result.is_err() {
+        if let Err(e) = result {
+            // Check if it's a disconnection error
+            if e == nusb::transfer::TransferError::Disconnected {
+                error!("device disconnected during control transfer");
+                return Err(MouseError::Disconnected);
+            }
+
             warn!("control transfer with Class request failed, trying Vendor request");
             self.interface
                 .control_out(
@@ -137,7 +151,8 @@ impl Mouse {
                     },
                     Duration::from_millis(100),
                 )
-                .wait()?;
+                .wait()
+                .map_err(transfer_error_to_mouse_error)?;
         }
 
         // Wait for single response packet
@@ -154,9 +169,9 @@ impl Mouse {
             });
         };
 
-        if !completion.status.is_ok() {
-            error!(?completion.status, "USB transfer failed");
-            return Err(MouseError::Timeout);
+        if let Err(transfer_error) = completion.status {
+            error!(?transfer_error, "USB transfer failed");
+            return Err(transfer_error_to_mouse_error(transfer_error));
         }
 
         let bytes_read = completion.buffer.len();

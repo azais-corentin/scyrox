@@ -700,6 +700,7 @@ dependencies = [
  "once_cell",
  "rustix",
  "slab",
+ "tokio",
  "windows-sys 0.60.2",
 ]
 
@@ -1022,6 +1023,7 @@ dependencies = [
  "directories",
  "hyper-util",
  "interprocess",
+ "nusb",
  "pin-project-lite",
  "scyrox",
  "scyrox-proto",
@@ -1216,6 +1218,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

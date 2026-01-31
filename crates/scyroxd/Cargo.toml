@@ -10,6 +10,7 @@ async-stream.workspace = true
 directories.workspace = true
 hyper-util.workspace = true
 interprocess.workspace = true
+nusb.workspace = true
 pin-project-lite.workspace = true
 scyrox.workspace = true
 scyrox-proto.workspace = true
