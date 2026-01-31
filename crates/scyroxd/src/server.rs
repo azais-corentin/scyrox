@@ -93,11 +93,10 @@ impl ScyroxService {
                     info!("Mouse reconnected");
                     *guard = Some(m);
                 }
-                Err(e) => {
-                    return Err(Status::unavailable(format!(
-                        "Mouse not connected. Please connect the device.: {}",
-                        e
-                    )));
+                Err(_) => {
+                    return Err(Status::unavailable(
+                        "Mouse not connected. Please connect the device.",
+                    ));
                 }
             }
         }

@@ -13,8 +13,11 @@ mod client;
 mod commands;
 mod direct;
 
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::Parser;
+use tonic::Status;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
@@ -23,8 +26,21 @@ use crate::cli::{Cli, Commands};
 use crate::client::DaemonClient;
 use crate::direct::DirectBackend;
 
+fn main() -> ExitCode {
+    if let Err(e) = run() {
+        // Extract clean message from tonic Status errors
+        if let Some(status) = e.downcast_ref::<Status>() {
+            eprintln!("Error: {}", status.message());
+        } else {
+            eprintln!("Error: {}", e);
+        }
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging based on verbosity level
