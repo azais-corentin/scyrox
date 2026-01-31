@@ -39,16 +39,50 @@ async fn show_profile(backend: &dyn Backend, id: &str) -> Result<()> {
 
     println!("Profile: {}", profile.name);
     println!("  ID:      {}", profile.id);
-    println!("  Default: {}", if profile.is_default { "Yes" } else { "No" });
+    println!(
+        "  Default: {}",
+        if profile.is_default { "Yes" } else { "No" }
+    );
     println!();
     println!("Configuration:");
     println!("  Polling Rate:      {}", profile.config.polling_rate);
     println!("  Lift-Off Distance: {}", profile.config.lift_off_distance);
-    println!("  Sleep Timeout:     {} seconds", profile.config.sleep_timeout_seconds);
-    println!("  Angle Snapping:    {}", if profile.config.angle_snapping { "On" } else { "Off" });
-    println!("  Ripple Control:    {}", if profile.config.ripple_control { "On" } else { "Off" });
-    println!("  High Speed Mode:   {}", if profile.config.high_speed_mode { "On" } else { "Off" });
-    println!("  Long Distance:     {}", if profile.config.long_distance_mode { "On" } else { "Off" });
+    println!(
+        "  Sleep Timeout:     {} seconds",
+        profile.config.sleep_timeout_seconds
+    );
+    println!(
+        "  Angle Snapping:    {}",
+        if profile.config.angle_snapping {
+            "On"
+        } else {
+            "Off"
+        }
+    );
+    println!(
+        "  Ripple Control:    {}",
+        if profile.config.ripple_control {
+            "On"
+        } else {
+            "Off"
+        }
+    );
+    println!(
+        "  High Speed Mode:   {}",
+        if profile.config.high_speed_mode {
+            "On"
+        } else {
+            "Off"
+        }
+    );
+    println!(
+        "  Long Distance:     {}",
+        if profile.config.long_distance_mode {
+            "On"
+        } else {
+            "Off"
+        }
+    );
 
     Ok(())
 }

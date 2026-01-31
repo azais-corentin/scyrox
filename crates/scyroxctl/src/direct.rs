@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, Mouse, MouseConfig, PollingRate};
 

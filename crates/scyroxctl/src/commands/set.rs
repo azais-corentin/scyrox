@@ -14,7 +14,9 @@ pub async fn run(backend: &dyn Backend, cmd: &SetCommand) -> Result<()> {
         SetWhat::AngleSnapping { state } => set_angle_snapping(backend, state.to_bool()).await,
         SetWhat::RippleControl { state } => set_ripple_control(backend, state.to_bool()).await,
         SetWhat::HighSpeedMode { state } => set_high_speed_mode(backend, state.to_bool()).await,
-        SetWhat::LongDistanceMode { state } => set_long_distance_mode(backend, state.to_bool()).await,
+        SetWhat::LongDistanceMode { state } => {
+            set_long_distance_mode(backend, state.to_bool()).await
+        }
     }
 }
 
@@ -58,24 +60,36 @@ async fn set_sleep_timeout(backend: &dyn Backend, seconds: u16) -> Result<()> {
 
 async fn set_angle_snapping(backend: &dyn Backend, enabled: bool) -> Result<()> {
     backend.set_angle_snapping(enabled).await?;
-    println!("Angle snapping {}", if enabled { "enabled" } else { "disabled" });
+    println!(
+        "Angle snapping {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     Ok(())
 }
 
 async fn set_ripple_control(backend: &dyn Backend, enabled: bool) -> Result<()> {
     backend.set_ripple_control(enabled).await?;
-    println!("Ripple control {}", if enabled { "enabled" } else { "disabled" });
+    println!(
+        "Ripple control {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     Ok(())
 }
 
 async fn set_high_speed_mode(backend: &dyn Backend, enabled: bool) -> Result<()> {
     backend.set_high_speed_mode(enabled).await?;
-    println!("High speed mode {}", if enabled { "enabled" } else { "disabled" });
+    println!(
+        "High speed mode {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     Ok(())
 }
 
 async fn set_long_distance_mode(backend: &dyn Backend, enabled: bool) -> Result<()> {
     backend.set_long_distance_mode(enabled).await?;
-    println!("Long distance mode {}", if enabled { "enabled" } else { "disabled" });
+    println!(
+        "Long distance mode {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     Ok(())
 }

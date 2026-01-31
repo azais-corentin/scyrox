@@ -15,6 +15,8 @@
     pkg-config
     libusb1
     protobuf
+    dprint
+    nixfmt
   ];
 
   # https://devenv.sh/languages/

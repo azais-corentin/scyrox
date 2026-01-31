@@ -35,17 +35,19 @@ cargo test -- --list                    # List available tests
 
 ```bash
 cargo check                    # Check code (no build)
-cargo fmt                      # Format code
-cargo fmt -- --check           # Check formatting without applying
+dprint fmt                     # Format entire repository (always use this)
 cargo clippy                   # Run clippy lints
 cargo clippy -- -D warnings    # Fail on warnings
 ```
+
+**Important:** Always use `dprint fmt` to format files. It formats the entire repository at once.
 
 ## Code Style Guidelines
 
 ### Imports
 
 Order imports in groups separated by blank lines:
+
 1. Standard library (`std::`)
 2. External crates (alphabetically)
 3. Internal crates (`crate::`, `super::`)
@@ -89,7 +91,7 @@ pub type Result<T> = std::result::Result<T, MouseError>;
 Use `tracing` for structured logging with appropriate levels:
 
 ```rust
-use tracing::{debug, error, info, trace, warn, instrument};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[instrument(skip(self))]
 pub fn get_config(&mut self) -> Result<MouseConfig> {
@@ -97,7 +99,11 @@ pub fn get_config(&mut self) -> Result<MouseConfig> {
     debug!(offset = format!("0x{:04X}", offset), "reading memory");
     trace!(?data, "raw response received");
     warn!(byte, "unexpected value, using default");
-    error!(expected = CMD_BATTERY, got = response[1], "command mismatch");
+    error!(
+        expected = CMD_BATTERY,
+        got = response[1],
+        "command mismatch"
+    );
     Ok(config)
 }
 ```
@@ -112,7 +118,8 @@ Use `tokio` for async runtime. Mark async functions appropriately:
 
 ```rust
 #[tokio::main]
-async fn main() -> Result<()> { /* ... */ }
+async fn main() -> Result<()> { /* ... */
+}
 ```
 
 ### CLI Structure (clap)

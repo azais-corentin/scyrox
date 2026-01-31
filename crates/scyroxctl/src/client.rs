@@ -6,13 +6,15 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use directories::ProjectDirs;
 use hyper_util::rt::TokioIo;
-use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::GenericFilePath;
+use interprocess::local_socket::tokio::prelude::*;
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
-use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate, SensorMode, SleepTime};
+use scyrox::{
+    BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate, SensorMode, SleepTime,
+};
 use scyrox_proto::scyrox_client::ScyroxClient;
 use scyrox_proto::*;
 
@@ -228,10 +230,7 @@ impl Backend for DaemonClient {
         Ok(Some(DaemonInfo {
             version: response.version,
             uptime_seconds: response.uptime_seconds,
-            connected: response
-                .device_status
-                .map(|s| s.connected)
-                .unwrap_or(false),
+            connected: response.device_status.map(|s| s.connected).unwrap_or(false),
         }))
     }
 }
@@ -244,8 +243,8 @@ fn get_socket_path() -> Result<PathBuf> {
     }
 
     // Fall back to state directory
-    let dirs = ProjectDirs::from("", "", "scyrox")
-        .context("Failed to determine project directories")?;
+    let dirs =
+        ProjectDirs::from("", "", "scyrox").context("Failed to determine project directories")?;
     let state_dir = dirs.state_dir().unwrap_or_else(|| dirs.data_local_dir());
     Ok(state_dir.join(SOCKET_NAME))
 }

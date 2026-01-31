@@ -104,7 +104,14 @@ async fn show_status() -> Result<()> {
             println!("  Uptime:  {} seconds", info.uptime_seconds);
 
             if let Some(device) = info.device_status {
-                println!("  Device:  {}", if device.connected { "Connected" } else { "Disconnected" });
+                println!(
+                    "  Device:  {}",
+                    if device.connected {
+                        "Connected"
+                    } else {
+                        "Disconnected"
+                    }
+                );
             }
         }
         Err(_) => {
@@ -127,8 +134,8 @@ fn get_socket_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(runtime_dir).join("scyrox").join(SOCKET_NAME));
     }
 
-    let dirs = ProjectDirs::from("", "", "scyrox")
-        .context("Failed to determine project directories")?;
+    let dirs =
+        ProjectDirs::from("", "", "scyrox").context("Failed to determine project directories")?;
     let state_dir = dirs.state_dir().unwrap_or_else(|| dirs.data_local_dir());
     Ok(state_dir.join(SOCKET_NAME))
 }

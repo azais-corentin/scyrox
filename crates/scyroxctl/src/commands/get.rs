@@ -22,11 +22,30 @@ async fn get_config(backend: &dyn Backend) -> Result<()> {
     println!("Configuration:");
     println!("  Polling Rate:      {}", config.polling_rate);
     println!("  Lift-Off Distance: {}", config.lift_off_distance);
-    println!("  Sleep Timeout:     {} seconds", config.sleep_timeout_seconds);
-    println!("  Angle Snapping:    {}", if config.angle_snapping { "On" } else { "Off" });
-    println!("  Ripple Control:    {}", if config.ripple_control { "On" } else { "Off" });
-    println!("  High Speed Mode:   {}", if config.high_speed_mode { "On" } else { "Off" });
-    println!("  Long Distance:     {}", if config.long_distance_mode { "On" } else { "Off" });
+    println!(
+        "  Sleep Timeout:     {} seconds",
+        config.sleep_timeout_seconds
+    );
+    println!(
+        "  Angle Snapping:    {}",
+        if config.angle_snapping { "On" } else { "Off" }
+    );
+    println!(
+        "  Ripple Control:    {}",
+        if config.ripple_control { "On" } else { "Off" }
+    );
+    println!(
+        "  High Speed Mode:   {}",
+        if config.high_speed_mode { "On" } else { "Off" }
+    );
+    println!(
+        "  Long Distance:     {}",
+        if config.long_distance_mode {
+            "On"
+        } else {
+            "Off"
+        }
+    );
 
     Ok(())
 }

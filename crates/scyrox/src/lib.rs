@@ -29,7 +29,7 @@ pub mod types;
 
 // Re-export main types at crate root for convenience
 pub use error::{MouseError, Result};
-pub use mouse::{Mouse, KEY_FUNCTION_COUNT, MACRO_COUNT, SHORTCUT_KEY_COUNT};
+pub use mouse::{KEY_FUNCTION_COUNT, MACRO_COUNT, Mouse, SHORTCUT_KEY_COUNT};
 pub use protocol::{
     is_status_changed_notification, parse_status_changed_notification, validate_response,
     verify_response_checksum,

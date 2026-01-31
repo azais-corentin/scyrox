@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging based on verbosity level
-let verbosity = if cli.trace { 2 } else { cli.verbose };
+    let verbosity = if cli.trace { 2 } else { cli.verbose };
     if verbosity > 0 {
         let filter = match verbosity {
             1 => EnvFilter::from_default_env()
@@ -38,9 +38,7 @@ let verbosity = if cli.trace { 2 } else { cli.verbose };
                 .add_directive("scyroxctl=trace".parse()?)
                 .add_directive("scyrox=trace".parse()?),
         };
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
     // Handle daemon subcommand separately (doesn't need a backend)

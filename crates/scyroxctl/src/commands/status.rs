@@ -18,7 +18,10 @@ pub async fn run(backend: &dyn Backend) -> Result<()> {
 
         // Show battery
         if let Ok(battery) = backend.get_battery().await {
-            println!("  Battery: {}% ({} mV)", battery.percentage, battery.voltage_mv);
+            println!(
+                "  Battery: {}% ({} mV)",
+                battery.percentage, battery.voltage_mv
+            );
         }
     }
 
@@ -30,7 +33,14 @@ pub async fn run(backend: &dyn Backend) -> Result<()> {
             println!("  Running: Yes");
             println!("  Version: {}", info.version);
             println!("  Uptime:  {} seconds", info.uptime_seconds);
-            println!("  Device:  {}", if info.connected { "Connected" } else { "Disconnected" });
+            println!(
+                "  Device:  {}",
+                if info.connected {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                }
+            );
         }
         None => {
             println!("  Running: No (using direct USB access)");

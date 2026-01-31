@@ -5,8 +5,8 @@ edition.workspace = true
 description = "Protobuf definitions for Scyrox daemon IPC"
 
 [dependencies]
-tonic.workspace = true
 prost.workspace = true
+tonic.workspace = true
 tonic-prost.workspace = true
 
 [build-dependencies]

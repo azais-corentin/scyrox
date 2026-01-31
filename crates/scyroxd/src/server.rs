@@ -37,7 +37,10 @@ impl ScyroxService {
     /// Create a new service instance.
     ///
     /// Returns the service and a receiver that will be notified when shutdown is requested.
-    pub fn new(config: DaemonConfig, dirs: ProjectDirs) -> Result<(Self, tokio::sync::watch::Receiver<bool>)> {
+    pub fn new(
+        config: DaemonConfig,
+        dirs: ProjectDirs,
+    ) -> Result<(Self, tokio::sync::watch::Receiver<bool>)> {
         // Try to open the mouse, but don't fail if not connected
         let mouse = match Mouse::open() {
             Ok(m) => {
@@ -53,14 +56,17 @@ impl ScyroxService {
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        Ok((Self {
-            mouse: Arc::new(Mutex::new(mouse)),
-            profiles: ProfileStore::new(&dirs),
-            config,
-            start_time: Instant::now(),
-            active_profile_id: Arc::new(Mutex::new(None)),
-            shutdown_tx,
-        }, shutdown_rx))
+        Ok((
+            Self {
+                mouse: Arc::new(Mutex::new(mouse)),
+                profiles: ProfileStore::new(&dirs),
+                config,
+                start_time: Instant::now(),
+                active_profile_id: Arc::new(Mutex::new(None)),
+                shutdown_tx,
+            },
+            shutdown_rx,
+        ))
     }
 
     /// Ensure mouse is connected, attempting to reconnect if needed.
@@ -555,8 +561,13 @@ fn convert_config_to_proto(config: &scyrox::MouseConfig) -> MouseConfig {
 
 fn convert_proto_to_config(proto: &MouseConfig) -> Result<scyrox::MouseConfig, Status> {
     Ok(scyrox::MouseConfig {
-        polling_rate: convert_polling_rate(PollingRate::try_from(proto.polling_rate).unwrap_or(PollingRate::Unspecified))?,
-        lift_off_distance: convert_lift_off_distance(LiftOffDistance::try_from(proto.lift_off_distance).unwrap_or(LiftOffDistance::Unspecified))?,
+        polling_rate: convert_polling_rate(
+            PollingRate::try_from(proto.polling_rate).unwrap_or(PollingRate::Unspecified),
+        )?,
+        lift_off_distance: convert_lift_off_distance(
+            LiftOffDistance::try_from(proto.lift_off_distance)
+                .unwrap_or(LiftOffDistance::Unspecified),
+        )?,
         sleep_timeout_seconds: proto.sleep_timeout_seconds as u16,
         angle_snapping: proto.angle_snapping,
         ripple_control: proto.ripple_control,
@@ -634,8 +645,12 @@ fn convert_profile_to_proto(profile: crate::profiles::Profile) -> Profile {
 }
 
 fn convert_proto_to_profile_config(proto: &MouseConfig) -> Result<ProfileConfig, Status> {
-    let polling_rate = convert_polling_rate(PollingRate::try_from(proto.polling_rate).unwrap_or(PollingRate::Unspecified))?;
-    let lod = convert_lift_off_distance(LiftOffDistance::try_from(proto.lift_off_distance).unwrap_or(LiftOffDistance::Unspecified))?;
+    let polling_rate = convert_polling_rate(
+        PollingRate::try_from(proto.polling_rate).unwrap_or(PollingRate::Unspecified),
+    )?;
+    let lod = convert_lift_off_distance(
+        LiftOffDistance::try_from(proto.lift_off_distance).unwrap_or(LiftOffDistance::Unspecified),
+    )?;
 
     Ok(ProfileConfig {
         polling_rate_hz: polling_rate.to_hz(),
@@ -648,9 +663,7 @@ fn convert_proto_to_profile_config(proto: &MouseConfig) -> Result<ProfileConfig,
     })
 }
 
-fn profile_config_to_mouse_config(
-    config: &ProfileConfig,
-) -> Result<scyrox::MouseConfig, Status> {
+fn profile_config_to_mouse_config(config: &ProfileConfig) -> Result<scyrox::MouseConfig, Status> {
     Ok(scyrox::MouseConfig {
         polling_rate: hz_to_scyrox_polling_rate(config.polling_rate_hz)?,
         lift_off_distance: mm_to_scyrox_lod(config.lift_off_distance_mm)?,

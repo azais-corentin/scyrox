@@ -24,8 +24,8 @@ use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 use pin_project_lite::pin_project;
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tonic::transport::server::Connected;
 use tonic::transport::Server;
+use tonic::transport::server::Connected;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -124,7 +124,12 @@ async fn main() -> Result<()> {
     // Bind to Unix socket
     info!(?socket_path, "Binding to socket");
     let listener = ListenerOptions::new()
-        .name(socket_path.as_path().as_os_str().to_fs_name::<GenericFilePath>()?)
+        .name(
+            socket_path
+                .as_path()
+                .as_os_str()
+                .to_fs_name::<GenericFilePath>()?,
+        )
         .create_tokio()?;
 
     // Create incoming stream for tonic

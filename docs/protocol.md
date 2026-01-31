@@ -75,39 +75,38 @@ This document provides a complete technical specification of the HID communicati
   - [Appendix B: Rust Type Definitions](#appendix-b-rust-type-definitions)
   - [Appendix C: Example Implementation](#appendix-c-example-implementation)
 
-
 ## 1. Device Identification
 
 ### USB Identifiers
 
-| Field | Value | Notes |
-|-------|-------|-------|
-| Vendor ID | `0x3554` | Scyrox |
-| Product ID (Wireless Dongle 1) | `0xF5F7` | 4K wireless dongle |
+| Field                          | Value    | Notes                    |
+| ------------------------------ | -------- | ------------------------ |
+| Vendor ID                      | `0x3554` | Scyrox                   |
+| Product ID (Wireless Dongle 1) | `0xF5F7` | 4K wireless dongle       |
 | Product ID (Wireless Dongle 2) | `0xF5F4` | Standard wireless dongle |
-| Product ID (Wired) | `0xF5F6` | Direct USB connection |
+| Product ID (Wired)             | `0xF5F6` | Direct USB connection    |
 
 ### Device Variants
 
 Devices are identified by CID (Company ID) and MID (Model ID) received during handshake:
 
-| CID | MID | Description |
-|-----|-----|-------------|
-| 62 | 1 | Model variant 1 |
-| 62 | 2 | Model variant 2 |
+| CID | MID | Description     |
+| --- | --- | --------------- |
+| 62  | 1   | Model variant 1 |
+| 62  | 2   | Model variant 2 |
 
 ### Connection Type Detection
 
 The `type` field in the handshake response indicates connection type:
 
-| Type Value | Connection | Max Polling Rate |
-|------------|------------|------------------|
-| 0 | Wireless (standard) | 1000 Hz |
-| 1 | Wireless (4K dongle) | 4000 Hz |
-| 2 | Wired (standard) | 1000 Hz |
-| 3 | Wired (high-speed) | 8000 Hz |
-| 4 | Wireless (2K dongle) | 2000 Hz |
-| 5 | Wireless (8K dongle) | 8000 Hz |
+| Type Value | Connection           | Max Polling Rate |
+| ---------- | -------------------- | ---------------- |
+| 0          | Wireless (standard)  | 1000 Hz          |
+| 1          | Wireless (4K dongle) | 4000 Hz          |
+| 2          | Wired (standard)     | 1000 Hz          |
+| 3          | Wired (high-speed)   | 8000 Hz          |
+| 4          | Wireless (2K dongle) | 2000 Hz          |
+| 5          | Wireless (8K dongle) | 8000 Hz          |
 
 ---
 
@@ -115,16 +114,17 @@ The `type` field in the handshake response indicates connection type:
 
 ### Report Parameters
 
-| Parameter | Value |
-|-----------|-------|
-| Report ID | `8` (0x08) |
-| Report Length | 16 bytes |
-| Input Report | 16 bytes |
-| Output Report | 16 bytes |
+| Parameter     | Value      |
+| ------------- | ---------- |
+| Report ID     | `8` (0x08) |
+| Report Length | 16 bytes   |
+| Input Report  | 16 bytes   |
+| Output Report | 16 bytes   |
 
 ### HID Collection Selection
 
 When enumerating HID collections, select the collection where:
+
 - `inputReports.length == 1`
 - `outputReports.length == 1`
 - `outputReports[0].reportId == 8`
@@ -178,6 +178,7 @@ fn calculate_checksum(packet: &[u8; 16]) -> u8 {
 ```
 
 Alternatively expressed:
+
 ```
 checksum = (0x55 - (sum of bytes 0-14) - REPORT_ID) & 0xFF
 ```
@@ -190,24 +191,24 @@ Where `REPORT_ID = 8`.
 
 ### Command ID Table
 
-| ID | Name | Direction | Description |
-|----|------|-----------|-------------|
-| 0x01 | EncryptionData | Bidirectional | Device handshake/identification |
-| 0x02 | PCDriverStatus | Host → Device | Notify device of driver connection |
-| 0x03 | DeviceOnLine | Bidirectional | Check if mouse is connected to dongle |
-| 0x04 | BatteryLevel | Device → Host | Get battery status |
-| 0x05 | DongleEnterPair | Host → Device | Enter pairing mode |
-| 0x06 | GetPairState | Bidirectional | Query pairing status |
-| 0x07 | WriteFlashData | Host → Device | Write to flash memory |
-| 0x08 | ReadFlashData | Bidirectional | Read from flash memory |
-| 0x09 | ClearSetting | Host → Device | Factory reset |
-| 0x0A | StatusChanged | Device → Host | Configuration change notification |
-| 0x0E | GetCurrentConfig | Bidirectional | Get active profile index |
-| 0x0F | SetCurrentConfig | Host → Device | Set active profile |
-| 0x12 | ReadVersionID | Bidirectional | Get mouse firmware version |
-| 0x16 | SetLongRangeMode | Host → Device | Enable/disable long range mode |
-| 0x17 | GetLongRangeMode | Bidirectional | Query long range mode status |
-| 0x1D | GetDongleVersion | Bidirectional | Get dongle firmware version |
+| ID   | Name             | Direction     | Description                           |
+| ---- | ---------------- | ------------- | ------------------------------------- |
+| 0x01 | EncryptionData   | Bidirectional | Device handshake/identification       |
+| 0x02 | PCDriverStatus   | Host → Device | Notify device of driver connection    |
+| 0x03 | DeviceOnLine     | Bidirectional | Check if mouse is connected to dongle |
+| 0x04 | BatteryLevel     | Device → Host | Get battery status                    |
+| 0x05 | DongleEnterPair  | Host → Device | Enter pairing mode                    |
+| 0x06 | GetPairState     | Bidirectional | Query pairing status                  |
+| 0x07 | WriteFlashData   | Host → Device | Write to flash memory                 |
+| 0x08 | ReadFlashData    | Bidirectional | Read from flash memory                |
+| 0x09 | ClearSetting     | Host → Device | Factory reset                         |
+| 0x0A | StatusChanged    | Device → Host | Configuration change notification     |
+| 0x0E | GetCurrentConfig | Bidirectional | Get active profile index              |
+| 0x0F | SetCurrentConfig | Host → Device | Set active profile                    |
+| 0x12 | ReadVersionID    | Bidirectional | Get mouse firmware version            |
+| 0x16 | SetLongRangeMode | Host → Device | Enable/disable long range mode        |
+| 0x17 | GetLongRangeMode | Bidirectional | Query long range mode status          |
+| 0x1D | GetDongleVersion | Bidirectional | Get dongle firmware version           |
 
 ---
 
@@ -218,6 +219,7 @@ Where `REPORT_ID = 8`.
 This command initiates communication and retrieves device identification.
 
 **Request:**
+
 ```
 Byte 0:     0x01 (command)
 Byte 1:     0x00
@@ -230,6 +232,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x01
 Byte 1:     0x00 (success)
@@ -245,6 +248,7 @@ Byte 15:    Checksum
 Notifies the device that a driver is connected/disconnected.
 
 **Request:**
+
 ```
 Byte 0:     0x02
 Byte 1:     0x00
@@ -260,6 +264,7 @@ Byte 15:    Checksum
 Checks if the mouse is connected to the wireless dongle.
 
 **Request:**
+
 ```
 Byte 0:     0x03
 Byte 1-14:  0x00
@@ -267,6 +272,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x03
 Byte 1:     0x00 (success)
@@ -284,6 +290,7 @@ The device address (3 bytes) uniquely identifies the paired mouse.
 Retrieves current battery level and charging status.
 
 **Request:**
+
 ```
 Byte 0:     0x04
 Byte 1-14:  0x00
@@ -291,6 +298,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x04
 Byte 1:     0x00 (success)
@@ -302,11 +310,13 @@ Byte 15:    Checksum
 ```
 
 **Voltage Interpretation:**
+
 ```rust
 let voltage_mv: u16 = ((response[7] as u16) << 8) | (response[8] as u16);
 ```
 
 Voltage-to-percentage lookup table (millivolts):
+
 ```
 3050 → 0%
 3420 → 5%
@@ -336,6 +346,7 @@ Voltage-to-percentage lookup table (millivolts):
 Puts the dongle into pairing mode to accept a new mouse.
 
 **Request:**
+
 ```
 Byte 0:     0x05
 Byte 1:     0x00
@@ -355,6 +366,7 @@ Byte 15:    Checksum
 Queries the current pairing state.
 
 **Request:**
+
 ```
 Byte 0:     0x06
 Byte 1-14:  0x00
@@ -362,6 +374,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x06
 Byte 1:     0x00 (success)
@@ -371,18 +384,20 @@ Byte 15:    Checksum
 ```
 
 **Pairing Status Values:**
-| Value | Meaning |
-|-------|---------|
-| 0 | Idle / Not pairing |
-| 1 | Pairing in progress |
-| 2 | Pairing failed |
-| 3 | Pairing successful |
+
+| Value | Meaning             |
+| ----- | ------------------- |
+| 0     | Idle / Not pairing  |
+| 1     | Pairing in progress |
+| 2     | Pairing failed      |
+| 3     | Pairing successful  |
 
 ### 5.7 WriteFlashData (0x07) - Write to Flash
 
 Writes data to the mouse's flash memory.
 
 **Request:**
+
 ```
 Byte 0:     0x07
 Byte 1:     0x00
@@ -396,6 +411,7 @@ Byte 15:    Checksum
 **Response:** Standard acknowledgment with echoed address.
 
 **Important:** For single-byte writes that require validation, use the complement checksum format:
+
 ```
 Byte 4:     0x02 (always 2 bytes)
 Byte 5:     Value
@@ -407,6 +423,7 @@ Byte 6:     0x55 - Value (complement)
 Reads data from the mouse's flash memory.
 
 **Request:**
+
 ```
 Byte 0:     0x08
 Byte 1:     0x00
@@ -418,6 +435,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x08
 Byte 1:     0x00 (success)
@@ -436,6 +454,7 @@ Verify that bytes 0-4 of the response match the request before accepting data.
 Resets the mouse to factory defaults.
 
 **Request:**
+
 ```
 Byte 0:     0x09
 Byte 1-14:  0x00
@@ -451,6 +470,7 @@ Byte 15:    Checksum
 This is an **unsolicited notification** sent by the device when settings change (e.g., DPI button pressed on mouse).
 
 **Response (unsolicited):**
+
 ```
 Byte 0:     0x0A
 Byte 1:     0x00
@@ -459,20 +479,22 @@ Byte 15:    Checksum
 ```
 
 **Change Flag Bitmask:**
-| Bit | Meaning | Action Required |
-|-----|---------|-----------------|
-| 0 (0x01) | Current DPI changed | Re-read address 4 |
-| 1 (0x02) | Report rate changed | Re-read address 0 |
-| 2 (0x04) | Profile changed | Re-read address via GetCurrentConfig |
-| 3 (0x08) | DPI settings changed | Re-read addresses 12-75 |
-| 5 (0x20) | Light settings changed | Re-read address 160+ |
-| 6 (0x40) | Battery status changed | Re-read via BatteryLevel command |
+
+| Bit      | Meaning                | Action Required                      |
+| -------- | ---------------------- | ------------------------------------ |
+| 0 (0x01) | Current DPI changed    | Re-read address 4                    |
+| 1 (0x02) | Report rate changed    | Re-read address 0                    |
+| 2 (0x04) | Profile changed        | Re-read address via GetCurrentConfig |
+| 3 (0x08) | DPI settings changed   | Re-read addresses 12-75              |
+| 5 (0x20) | Light settings changed | Re-read address 160+                 |
+| 6 (0x40) | Battery status changed | Re-read via BatteryLevel command     |
 
 ### 5.11 GetCurrentConfig (0x0E) - Get Profile
 
 Gets the currently active profile index.
 
 **Request:**
+
 ```
 Byte 0:     0x0E
 Byte 1-14:  0x00
@@ -480,6 +502,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x0E
 Byte 1:     0x00 (success)
@@ -492,6 +515,7 @@ Byte 15:    Checksum
 Sets the active profile.
 
 **Request:**
+
 ```
 Byte 0:     0x0F
 Byte 1:     0x00
@@ -509,6 +533,7 @@ Byte 15:    Checksum
 Gets the mouse's firmware version.
 
 **Request:**
+
 ```
 Byte 0:     0x12
 Byte 1-14:  0x00
@@ -516,6 +541,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x12
 Byte 1:     0x00 (success)
@@ -525,6 +551,7 @@ Byte 15:    Checksum
 ```
 
 **Version String Format:**
+
 ```rust
 let version = format!("v{}.{:02x}", response[5], response[6]);
 // Example: major=2, minor=0x20 → "v2.20"
@@ -535,6 +562,7 @@ let version = format!("v{}.{:02x}", response[5], response[6]);
 Enables or disables long-range wireless mode (increased power consumption).
 
 **Request:**
+
 ```
 Byte 0:     0x16
 Byte 1:     0x00
@@ -552,6 +580,7 @@ Byte 15:    Checksum
 Queries the current long-range mode status.
 
 **Request:**
+
 ```
 Byte 0:     0x17
 Byte 1-14:  0x00
@@ -559,6 +588,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x17
 Byte 1:     0x00 (success) or 0x01 (not supported)
@@ -573,6 +603,7 @@ Byte 15:    Checksum
 Gets the wireless dongle's firmware version.
 
 **Request:**
+
 ```
 Byte 0:     0x1D
 Byte 1-14:  0x00
@@ -580,6 +611,7 @@ Byte 15:    Checksum
 ```
 
 **Response:**
+
 ```
 Byte 0:     0x1D
 Byte 1:     0x00 (success)
@@ -596,50 +628,51 @@ The mouse stores all configuration in flash memory. Total readable configuration
 
 ### 6.1 Memory Layout Overview
 
-| Address Range | Size | Description |
-|---------------|------|-------------|
-| 0x0000-0x0001 | 2 | Report Rate |
-| 0x0002-0x0003 | 2 | Max DPI Count |
-| 0x0004-0x0005 | 2 | Current DPI Index |
-| 0x0006-0x0007 | 2 | Reserved |
-| 0x0008-0x0009 | 2 | 20K Sensor Mode |
-| 0x000A-0x000B | 2 | LOD (Lift-off Distance) |
-| 0x000C-0x002B | 32 | DPI Values (8 × 4 bytes) |
-| 0x002C-0x004B | 32 | DPI Colors (8 × 4 bytes) |
-| 0x004C-0x004D | 2 | DPI Effect Mode |
-| 0x004E-0x004F | 2 | DPI Effect Brightness |
-| 0x0050-0x0051 | 2 | DPI Effect Speed |
-| 0x0052-0x0053 | 2 | DPI Effect State |
-| 0x0060-0x007F | 32 | Key Functions (8 × 4 bytes) |
-| 0x00A0-0x00A6 | 7 | Light Settings |
-| 0x00A7 | 1 | Light On/Off State |
-| 0x00A9 | 1 | Debounce Time |
-| 0x00AB | 1 | Motion Sync |
-| 0x00AD | 1 | Sleep Time |
-| 0x00AF | 1 | Angle Snapping |
-| 0x00B1 | 1 | Ripple Control |
-| 0x00B3 | 1 | Moving Off Light |
-| 0x00B5 | 1 | Performance State |
-| 0x00B7 | 1 | Performance/Sleep Time Value |
-| 0x00B9 | 1 | Sensor Mode |
-| 0x0100-0x01FF | 256 | Shortcut Keys (8 × 32 bytes) |
-| 0x0300-0x0BFF | 3072 | Macros (8 × 384 bytes) |
+| Address Range | Size | Description                  |
+| ------------- | ---- | ---------------------------- |
+| 0x0000-0x0001 | 2    | Report Rate                  |
+| 0x0002-0x0003 | 2    | Max DPI Count                |
+| 0x0004-0x0005 | 2    | Current DPI Index            |
+| 0x0006-0x0007 | 2    | Reserved                     |
+| 0x0008-0x0009 | 2    | 20K Sensor Mode              |
+| 0x000A-0x000B | 2    | LOD (Lift-off Distance)      |
+| 0x000C-0x002B | 32   | DPI Values (8 × 4 bytes)     |
+| 0x002C-0x004B | 32   | DPI Colors (8 × 4 bytes)     |
+| 0x004C-0x004D | 2    | DPI Effect Mode              |
+| 0x004E-0x004F | 2    | DPI Effect Brightness        |
+| 0x0050-0x0051 | 2    | DPI Effect Speed             |
+| 0x0052-0x0053 | 2    | DPI Effect State             |
+| 0x0060-0x007F | 32   | Key Functions (8 × 4 bytes)  |
+| 0x00A0-0x00A6 | 7    | Light Settings               |
+| 0x00A7        | 1    | Light On/Off State           |
+| 0x00A9        | 1    | Debounce Time                |
+| 0x00AB        | 1    | Motion Sync                  |
+| 0x00AD        | 1    | Sleep Time                   |
+| 0x00AF        | 1    | Angle Snapping               |
+| 0x00B1        | 1    | Ripple Control               |
+| 0x00B3        | 1    | Moving Off Light             |
+| 0x00B5        | 1    | Performance State            |
+| 0x00B7        | 1    | Performance/Sleep Time Value |
+| 0x00B9        | 1    | Sensor Mode                  |
+| 0x0100-0x01FF | 256  | Shortcut Keys (8 × 32 bytes) |
+| 0x0300-0x0BFF | 3072 | Macros (8 × 384 bytes)       |
 
 ### 6.2 Report Rate (Address 0x0000)
 
 Single byte encoding:
 
 | Stored Value | Report Rate |
-|--------------|-------------|
-| 8 | 125 Hz |
-| 4 | 250 Hz |
-| 2 | 500 Hz |
-| 1 | 1000 Hz |
-| 16 | 2000 Hz |
-| 32 | 4000 Hz |
-| 64 | 8000 Hz |
+| ------------ | ----------- |
+| 8            | 125 Hz      |
+| 4            | 250 Hz      |
+| 2            | 500 Hz      |
+| 1            | 1000 Hz     |
+| 16           | 2000 Hz     |
+| 32           | 4000 Hz     |
+| 64           | 8000 Hz     |
 
 **Encoding Formula:**
+
 ```rust
 fn encode_report_rate(hz: u16) -> u8 {
     if hz <= 1000 {
@@ -676,11 +709,11 @@ Enables 20,000 FPS sensor mode (requires Performance Mode enabled).
 
 Single byte:
 
-| Value | LOD |
-|-------|-----|
-| 3 | 0.7mm |
-| 1 | 1.0mm |
-| 2 | 2.0mm |
+| Value | LOD   |
+| ----- | ----- |
+| 3     | 0.7mm |
+| 1     | 1.0mm |
+| 2     | 2.0mm |
 
 ### 6.7 DPI Values (Address 0x000C-0x002B)
 
@@ -694,6 +727,7 @@ Offset 3: Checksum of bytes 0-2
 ```
 
 **Encoding:**
+
 ```rust
 fn encode_dpi(dpi: u16) -> [u8; 4] {
     let encoded = (dpi / 50) - 1;
@@ -727,26 +761,27 @@ Offset 3: Reserved/Checksum
 
 ### 6.9 DPI Effect Settings (Addresses 0x004C-0x0053)
 
-| Address | Description | Values |
-|---------|-------------|--------|
-| 0x004C | Effect Mode | 0=Off, 1=Constant, 2=Breathing |
-| 0x004E | Brightness | See brightness table |
-| 0x0050 | Speed | 1-10 |
-| 0x0052 | State | 0=Off, 1=On |
+| Address | Description | Values                         |
+| ------- | ----------- | ------------------------------ |
+| 0x004C  | Effect Mode | 0=Off, 1=Constant, 2=Breathing |
+| 0x004E  | Brightness  | See brightness table           |
+| 0x0050  | Speed       | 1-10                           |
+| 0x0052  | State       | 0=Off, 1=On                    |
 
 **Brightness Encoding:**
+
 | Index | Raw Value |
-|-------|-----------|
-| 1 | 16 |
-| 2 | 30 |
-| 3 | 60 |
-| 4 | 90 |
-| 5 | 128 |
-| 6 | 150 |
-| 7 | 180 |
-| 8 | 210 |
-| 9 | 230 |
-| 10 | 255 |
+| ----- | --------- |
+| 1     | 16        |
+| 2     | 30        |
+| 3     | 60        |
+| 4     | 90        |
+| 5     | 128       |
+| 6     | 150       |
+| 7     | 180       |
+| 8     | 210       |
+| 9     | 230       |
+| 10    | 255       |
 
 ### 6.10 Key Functions (Address 0x0060-0x007F)
 
@@ -761,46 +796,51 @@ Offset 3: Checksum
 
 **Function Types:**
 
-| Type | Description | Parameters |
-|------|-------------|------------|
-| 0 | Disabled | None |
-| 1 | Mouse Button | Button code (see below) |
-| 2 | DPI Switch | Mode code (see below) |
-| 3 | Scroll Wheel | Direction code |
-| 4 | Fire Key | Interval, Count |
-| 5 | Shortcut Key | Reference to shortcut slot |
-| 6 | Macro | Macro slot, Cycle count |
-| 7 | Report Rate Switch | None |
+| Type | Description        | Parameters                 |
+| ---- | ------------------ | -------------------------- |
+| 0    | Disabled           | None                       |
+| 1    | Mouse Button       | Button code (see below)    |
+| 2    | DPI Switch         | Mode code (see below)      |
+| 3    | Scroll Wheel       | Direction code             |
+| 4    | Fire Key           | Interval, Count            |
+| 5    | Shortcut Key       | Reference to shortcut slot |
+| 6    | Macro              | Macro slot, Cycle count    |
+| 7    | Report Rate Switch | None                       |
 
 **Mouse Button Codes (Type 1):**
-| Code | Button |
-|------|--------|
-| 0x0100 | Left Click |
-| 0x0200 | Right Click |
+
+| Code   | Button       |
+| ------ | ------------ |
+| 0x0100 | Left Click   |
+| 0x0200 | Right Click  |
 | 0x0400 | Middle Click |
-| 0x0800 | Back |
-| 0x1000 | Forward |
+| 0x0800 | Back         |
+| 0x1000 | Forward      |
 
 **DPI Switch Codes (Type 2):**
-| Code | Action |
-|------|--------|
+
+| Code   | Action    |
+| ------ | --------- |
 | 0x0100 | DPI Cycle |
-| 0x0200 | DPI Up |
-| 0x0300 | DPI Down |
+| 0x0200 | DPI Up    |
+| 0x0300 | DPI Down  |
 
 **Scroll Codes (Type 3):**
-| Code | Action |
-|------|--------|
-| 0x0100 | Scroll Left |
+
+| Code   | Action       |
+| ------ | ------------ |
+| 0x0100 | Scroll Left  |
 | 0x0200 | Scroll Right |
 
 **Fire Key Format (Type 4):**
+
 ```
 Byte 1: Interval (10-255 ms)
 Byte 2: Repeat count (0-3, 0 = hold to repeat)
 ```
 
 **Macro Format (Type 6):**
+
 ```
 Byte 1: Macro slot index (0-7)
 Byte 2: Cycle count (1-255, 253-255 = special modes)
@@ -820,51 +860,55 @@ Offset 7 (0xA7): On/Off state (0=off, 1=on)
 ```
 
 **Light Modes:**
-| Value | Mode |
-|-------|------|
-| 0 | Off |
-| 1 | Color Flow |
-| 2 | Single Color Breathing |
-| 3 | Constant Color |
-| 4 | Neon |
-| 5 | Mixed Color Breathing |
-| 6 | Colorful Constant |
+
+| Value | Mode                   |
+| ----- | ---------------------- |
+| 0     | Off                    |
+| 1     | Color Flow             |
+| 2     | Single Color Breathing |
+| 3     | Constant Color         |
+| 4     | Neon                   |
+| 5     | Mixed Color Breathing  |
+| 6     | Colorful Constant      |
 
 ### 6.12 Sensor Settings
 
-| Address | Setting | Values |
-|---------|---------|--------|
-| 0x00A9 | Debounce Time | 0-30 ms |
-| 0x00AB | Motion Sync | 0=off, 1=on |
-| 0x00AD | Sleep Time | Same as Performance Time |
-| 0x00AF | Angle Snapping | 0=off, 1=on |
-| 0x00B1 | Ripple Control | 0=off, 1=on |
-| 0x00B3 | Moving Off Light Time | Time value |
-| 0x00B5 | Performance Mode | 0=off, 1=on |
-| 0x00B7 | Sleep/Performance Time | See table |
-| 0x00B9 | Sensor Mode | 0=LP, 1=HP |
+| Address | Setting                | Values                   |
+| ------- | ---------------------- | ------------------------ |
+| 0x00A9  | Debounce Time          | 0-30 ms                  |
+| 0x00AB  | Motion Sync            | 0=off, 1=on              |
+| 0x00AD  | Sleep Time             | Same as Performance Time |
+| 0x00AF  | Angle Snapping         | 0=off, 1=on              |
+| 0x00B1  | Ripple Control         | 0=off, 1=on              |
+| 0x00B3  | Moving Off Light Time  | Time value               |
+| 0x00B5  | Performance Mode       | 0=off, 1=on              |
+| 0x00B7  | Sleep/Performance Time | See table                |
+| 0x00B9  | Sensor Mode            | 0=LP, 1=HP               |
 
 **Sleep/Performance Time Values:**
-| Value | Time |
-|-------|------|
-| 1 | 10 seconds |
-| 3 | 30 seconds |
-| 6 | 1 minute |
-| 30 | 5 minutes |
-| 60 | 10 minutes |
-| 180 | 30 minutes |
+
+| Value | Time       |
+| ----- | ---------- |
+| 1     | 10 seconds |
+| 3     | 30 seconds |
+| 6     | 1 minute   |
+| 30    | 5 minutes  |
+| 60    | 10 minutes |
+| 180   | 30 minutes |
 
 ### 6.13 Shortcut Keys (Address 0x0100-0x01FF)
 
 8 shortcut slots, 32 bytes each.
 
 **Structure:**
+
 ```
 Offset 0: Total event count (key down + key up events)
 Offset 1+: Event triplets (3 bytes each)
 ```
 
 **Event Triplet Format:**
+
 ```
 Byte 0: Event type
         Bit 7: Key down (0x80)
@@ -875,44 +919,47 @@ Byte 2: Key code high byte
 ```
 
 **Modifier Key Codes (type 0):**
-| Value | Key |
-|-------|-----|
-| 1 | Left Ctrl |
-| 2 | Left Shift |
-| 4 | Left Alt |
-| 8 | Left Win |
-| 16 | Right Ctrl |
-| 32 | Right Shift |
-| 64 | Right Alt |
-| 128 | Right Win |
+
+| Value | Key         |
+| ----- | ----------- |
+| 1     | Left Ctrl   |
+| 2     | Left Shift  |
+| 4     | Left Alt    |
+| 8     | Left Win    |
+| 16    | Right Ctrl  |
+| 32    | Right Shift |
+| 64    | Right Alt   |
+| 128   | Right Win   |
 
 **Media Key Codes (type 2):**
-| Code | Function |
-|------|----------|
-| 0x0183 | Media Player |
-| 0x00CD | Play/Pause |
-| 0x00B5 | Next Track |
+
+| Code   | Function       |
+| ------ | -------------- |
+| 0x0183 | Media Player   |
+| 0x00CD | Play/Pause     |
+| 0x00B5 | Next Track     |
 | 0x00B6 | Previous Track |
-| 0x00B7 | Stop |
-| 0x00E2 | Mute |
-| 0x00E9 | Volume Up |
-| 0x00EA | Volume Down |
-| 0x018A | Email |
-| 0x0192 | Calculator |
-| 0x0194 | My Computer |
-| 0x0221 | Search |
-| 0x0223 | Home Page |
-| 0x0224 | Web Back |
-| 0x0225 | Web Forward |
-| 0x0226 | Web Stop |
-| 0x0227 | Refresh |
-| 0x022A | Favorites |
+| 0x00B7 | Stop           |
+| 0x00E2 | Mute           |
+| 0x00E9 | Volume Up      |
+| 0x00EA | Volume Down    |
+| 0x018A | Email          |
+| 0x0192 | Calculator     |
+| 0x0194 | My Computer    |
+| 0x0221 | Search         |
+| 0x0223 | Home Page      |
+| 0x0224 | Web Back       |
+| 0x0225 | Web Forward    |
+| 0x0226 | Web Stop       |
+| 0x0227 | Refresh        |
+| 0x022A | Favorites      |
 
 ### 6.14 Macros (Address 0x0300-0x0BFF)
 
 8 macro slots, 384 bytes each.
 
 **Structure:**
+
 ```
 Offset 0:      Name length (1-30)
 Offset 1-30:   Name (ASCII characters)
@@ -921,6 +968,7 @@ Offset 32+:    Events (5 bytes each)
 ```
 
 **Event Format (5 bytes):**
+
 ```
 Byte 0: Status and type
         Bits 6-7: Status (1=key down, 2=key up)
@@ -932,21 +980,23 @@ Byte 4: Delay low byte
 ```
 
 **Mouse Button Codes (type 4):**
-| Code | Button |
-|------|--------|
-| 0x01 | Left |
-| 0x02 | Right |
-| 0x04 | Middle |
-| 0x08 | Back |
+
+| Code | Button  |
+| ---- | ------- |
+| 0x01 | Left    |
+| 0x02 | Right   |
+| 0x04 | Middle  |
+| 0x08 | Back    |
 | 0x10 | Forward |
 
 **Cycle Count Special Values:**
-| Value | Behavior |
-|-------|----------|
-| 1-250 | Repeat N times |
-| 253 | Loop until key pressed again |
-| 254 | Loop until key released |
-| 255 | Loop until any key pressed |
+
+| Value | Behavior                     |
+| ----- | ---------------------------- |
+| 1-250 | Repeat N times               |
+| 253   | Loop until key pressed again |
+| 254   | Loop until key released      |
+| 255   | Loop until any key pressed   |
 
 ---
 
@@ -954,48 +1004,48 @@ Byte 4: Delay low byte
 
 For keyboard shortcuts and macros, use USB HID scan codes:
 
-| Key | Code | Key | Code | Key | Code |
-|-----|------|-----|------|-----|------|
-| A | 4 | N | 17 | 0 | 39 |
-| B | 5 | O | 18 | Enter | 40 |
-| C | 6 | P | 19 | Escape | 41 |
-| D | 7 | Q | 20 | Backspace | 42 |
-| E | 8 | R | 21 | Tab | 43 |
-| F | 9 | S | 22 | Space | 44 |
-| G | 10 | T | 23 | Minus | 45 |
-| H | 11 | U | 24 | Equal | 46 |
-| I | 12 | V | 25 | LeftBracket | 47 |
-| J | 13 | W | 26 | RightBracket | 48 |
-| K | 14 | X | 27 | Backslash | 49 |
-| L | 15 | Y | 28 | Semicolon | 51 |
-| M | 16 | Z | 29 | Quote | 52 |
-| 1 | 30 | Comma | 54 | Backquote | 53 |
-| 2 | 31 | Period | 55 | CapsLock | 57 |
-| 3 | 32 | Slash | 56 | F1 | 58 |
-| 4 | 33 | F2 | 59 | F7 | 64 |
-| 5 | 34 | F3 | 60 | F8 | 65 |
-| 6 | 35 | F4 | 61 | F9 | 66 |
-| 7 | 36 | F5 | 62 | F10 | 67 |
-| 8 | 37 | F6 | 63 | F11 | 68 |
-| 9 | 38 | F12 | 69 | PrintScreen | 70 |
+| Key | Code | Key    | Code | Key          | Code |
+| --- | ---- | ------ | ---- | ------------ | ---- |
+| A   | 4    | N      | 17   | 0            | 39   |
+| B   | 5    | O      | 18   | Enter        | 40   |
+| C   | 6    | P      | 19   | Escape       | 41   |
+| D   | 7    | Q      | 20   | Backspace    | 42   |
+| E   | 8    | R      | 21   | Tab          | 43   |
+| F   | 9    | S      | 22   | Space        | 44   |
+| G   | 10   | T      | 23   | Minus        | 45   |
+| H   | 11   | U      | 24   | Equal        | 46   |
+| I   | 12   | V      | 25   | LeftBracket  | 47   |
+| J   | 13   | W      | 26   | RightBracket | 48   |
+| K   | 14   | X      | 27   | Backslash    | 49   |
+| L   | 15   | Y      | 28   | Semicolon    | 51   |
+| M   | 16   | Z      | 29   | Quote        | 52   |
+| 1   | 30   | Comma  | 54   | Backquote    | 53   |
+| 2   | 31   | Period | 55   | CapsLock     | 57   |
+| 3   | 32   | Slash  | 56   | F1           | 58   |
+| 4   | 33   | F2     | 59   | F7           | 64   |
+| 5   | 34   | F3     | 60   | F8           | 65   |
+| 6   | 35   | F4     | 61   | F9           | 66   |
+| 7   | 36   | F5     | 62   | F10          | 67   |
+| 8   | 37   | F6     | 63   | F11          | 68   |
+| 9   | 38   | F12    | 69   | PrintScreen  | 70   |
 
-| Key | Code | Key | Code |
-|-----|------|-----|------|
-| ScrollLock | 71 | Pause | 72 |
-| Insert | 73 | Home | 74 |
-| PageUp | 75 | Delete | 76 |
-| End | 77 | PageDown | 78 |
-| ArrowRight | 79 | ArrowLeft | 80 |
-| ArrowDown | 81 | ArrowUp | 82 |
-| NumLock | 83 | NumpadDivide | 84 |
-| NumpadMultiply | 85 | NumpadSubtract | 86 |
-| NumpadAdd | 87 | NumpadEnter | 88 |
-| Numpad1 | 89 | Numpad2 | 90 |
-| Numpad3 | 91 | Numpad4 | 92 |
-| Numpad5 | 93 | Numpad6 | 94 |
-| Numpad7 | 95 | Numpad8 | 96 |
-| Numpad9 | 97 | Numpad0 | 98 |
-| NumpadDecimal | 99 | | |
+| Key            | Code | Key            | Code |
+| -------------- | ---- | -------------- | ---- |
+| ScrollLock     | 71   | Pause          | 72   |
+| Insert         | 73   | Home           | 74   |
+| PageUp         | 75   | Delete         | 76   |
+| End            | 77   | PageDown       | 78   |
+| ArrowRight     | 79   | ArrowLeft      | 80   |
+| ArrowDown      | 81   | ArrowUp        | 82   |
+| NumLock        | 83   | NumpadDivide   | 84   |
+| NumpadMultiply | 85   | NumpadSubtract | 86   |
+| NumpadAdd      | 87   | NumpadEnter    | 88   |
+| Numpad1        | 89   | Numpad2        | 90   |
+| Numpad3        | 91   | Numpad4        | 92   |
+| Numpad5        | 93   | Numpad6        | 94   |
+| Numpad7        | 95   | Numpad8        | 96   |
+| Numpad9        | 97   | Numpad0        | 98   |
+| NumpadDecimal  | 99   |                |      |
 
 ---
 
@@ -1025,13 +1075,13 @@ For keyboard shortcuts and macros, use USB HID scan codes:
 async fn read_full_flash(device: &HidDevice) -> Result<[u8; 256], Error> {
     let mut flash = [0u8; 256];
     let mut address = 0u16;
-    
+
     while address < 256 {
         let response = read_flash(device, address, 10).await?;
         flash[address as usize..address as usize + 10].copy_from_slice(&response);
         address += 10;
     }
-    
+
     Ok(flash)
 }
 ```
@@ -1051,7 +1101,7 @@ async fn write_setting(device: &HidDevice, address: u16, value: u8) -> Result<()
     packet[5] = value;
     packet[6] = 0x55u8.wrapping_sub(value); // Complement
     packet[15] = calculate_checksum(&packet);
-    
+
     send_report(device, &packet).await
 }
 ```
@@ -1062,29 +1112,30 @@ All commands should be sent with retry logic:
 
 ```rust
 async fn send_with_retry(
-    device: &HidDevice, 
-    packet: &[u8; 16], 
-    max_retries: u8
+    device: &HidDevice,
+    packet: &[u8; 16],
+    max_retries: u8,
 ) -> Result<[u8; 16], Error> {
     for attempt in 0..max_retries {
         device.write(packet)?;
-        
+
         // Wait for response with timeout
         let response = timeout(Duration::from_millis(200), device.read()).await?;
-        
+
         // Validate response matches request
         if validate_response(packet, &response) {
             return Ok(response);
         }
-        
+
         sleep(Duration::from_millis(10)).await;
     }
-    
+
     Err(Error::MaxRetriesExceeded)
 }
 
 fn validate_response(request: &[u8; 16], response: &[u8; 16]) -> bool {
-    if request[0] == 0x08 { // ReadFlashData
+    if request[0] == 0x08 {
+        // ReadFlashData
         request[0..5] == response[0..5]
     } else {
         request[0..3] == response[0..3]
@@ -1098,10 +1149,10 @@ fn validate_response(request: &[u8; 16], response: &[u8; 16]) -> bool {
 
 ### Response Status Codes
 
-| Status (Byte 1) | Meaning |
-|-----------------|---------|
-| 0x00 | Success |
-| 0x01 | Error / Not Supported |
+| Status (Byte 1) | Meaning               |
+| --------------- | --------------------- |
+| 0x00            | Success               |
+| 0x01            | Error / Not Supported |
 
 ### Common Error Conditions
 
@@ -1112,12 +1163,12 @@ fn validate_response(request: &[u8; 16], response: &[u8; 16]) -> bool {
 
 ### Recommended Timeouts
 
-| Operation | Timeout |
-|-----------|---------|
-| Standard command | 200ms |
-| Factory reset | 1200ms |
-| Flash write | 200ms |
-| Online poll interval | 1500ms |
+| Operation             | Timeout      |
+| --------------------- | ------------ |
+| Standard command      | 200ms        |
+| Factory reset         | 1200ms       |
+| Flash write           | 200ms        |
+| Online poll interval  | 1500ms       |
 | Battery poll interval | 5000-10000ms |
 
 ---
@@ -1157,7 +1208,9 @@ const REPORT_ID: u8 = 8;
 
 fn calculate_checksum(packet: &[u8; 16]) -> u8 {
     let sum: u16 = packet[0..15].iter().map(|&b| b as u16).sum();
-    0x55u8.wrapping_sub((sum & 0xFF) as u8).wrapping_sub(REPORT_ID)
+    0x55u8
+        .wrapping_sub((sum & 0xFF) as u8)
+        .wrapping_sub(REPORT_ID)
 }
 
 fn build_simple_command(command: u8) -> [u8; 16] {
@@ -1271,12 +1324,12 @@ pub enum FlashAddress {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionType {
-    WirelessStandard = 0,   // 1000 Hz max
-    Wireless4K = 1,         // 4000 Hz max
-    WiredStandard = 2,      // 1000 Hz max
-    WiredHighSpeed = 3,     // 8000 Hz max
-    Wireless2K = 4,         // 2000 Hz max
-    Wireless8K = 5,         // 8000 Hz max
+    WirelessStandard = 0, // 1000 Hz max
+    Wireless4K = 1,       // 4000 Hz max
+    WiredStandard = 2,    // 1000 Hz max
+    WiredHighSpeed = 3,   // 8000 Hz max
+    Wireless2K = 4,       // 2000 Hz max
+    Wireless8K = 5,       // 8000 Hz max
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1351,8 +1404,8 @@ pub struct BatteryStatus {
 
 #[derive(Debug, Clone)]
 pub struct DpiStage {
-    pub value: u16,      // 50-26000
-    pub color: [u8; 3],  // RGB
+    pub value: u16,     // 50-26000
+    pub color: [u8; 3], // RGB
 }
 
 #[derive(Debug, Clone)]
@@ -1384,25 +1437,25 @@ pub struct KeyFunction {
 
 #[derive(Debug, Clone)]
 pub struct MacroEvent {
-    pub key_down: bool,      // true = down, false = up
-    pub key_type: u8,        // 1 = keyboard, 4 = mouse
+    pub key_down: bool, // true = down, false = up
+    pub key_type: u8,   // 1 = keyboard, 4 = mouse
     pub key_code: u16,
     pub delay_ms: u16,
 }
 
 #[derive(Debug, Clone)]
 pub struct Macro {
-    pub name: String,        // max 30 chars
-    pub events: Vec<MacroEvent>,  // max 70 events
-    pub cycle_count: u8,     // 1-250, or 253-255 for special modes
+    pub name: String,            // max 30 chars
+    pub events: Vec<MacroEvent>, // max 70 events
+    pub cycle_count: u8,         // 1-250, or 253-255 for special modes
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroCycleMode {
-    Count(u8),               // 1-250
-    UntilKeyPressedAgain,    // 253
-    UntilKeyReleased,        // 254
-    UntilAnyKeyPressed,      // 255
+    Count(u8),            // 1-250
+    UntilKeyPressedAgain, // 253
+    UntilKeyReleased,     // 254
+    UntilAnyKeyPressed,   // 255
 }
 
 impl From<u8> for MacroCycleMode {
@@ -1449,111 +1502,112 @@ pub struct ScyroxMouse {
 impl ScyroxMouse {
     pub fn open() -> Result<Self, Box<dyn std::error::Error>> {
         let api = HidApi::new()?;
-        
+
         // Find device
-        let device = PRODUCT_IDS.iter()
+        let device = PRODUCT_IDS
+            .iter()
             .find_map(|&pid| api.open(VENDOR_ID, pid).ok())
             .ok_or("Device not found")?;
-        
+
         device.set_blocking_mode(true)?;
-        
+
         let mut mouse = Self {
             device,
             device_info: DeviceInfo::default(),
             config: MouseConfig::default(),
         };
-        
+
         mouse.initialize()?;
         Ok(mouse)
     }
-    
+
     fn initialize(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Get dongle version
         self.get_dongle_version()?;
-        
+
         // Wait for device online
         while !self.check_online()? {
             std::thread::sleep(Duration::from_millis(1500));
         }
-        
+
         // Notify driver connected
         self.set_pc_status(true)?;
-        
+
         // Handshake
         self.handshake()?;
-        
+
         // Read configuration
         self.read_full_config()?;
-        
+
         Ok(())
     }
-    
+
     fn send_command(&self, packet: &[u8; 16]) -> Result<[u8; 16], Box<dyn std::error::Error>> {
         // Prepend report ID for hidapi
         let mut report = [0u8; 17];
         report[0] = REPORT_ID;
         report[1..].copy_from_slice(packet);
-        
+
         self.device.write(&report)?;
-        
+
         let mut response = [0u8; 16];
         self.device.read_timeout(&mut response, 200)?;
-        
+
         Ok(response)
     }
-    
+
     fn check_online(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let packet = build_simple_command(Command::DeviceOnLine as u8);
         let response = self.send_command(&packet)?;
-        
+
         self.device_info.online = response[5] == 1;
         if self.device_info.online {
             self.device_info.address = [response[8], response[7], response[6]];
         }
-        
+
         Ok(self.device_info.online)
     }
-    
+
     fn handshake(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let mut data = [0u8; 8];
         for i in 0..4 {
             data[i] = rand::random();
         }
-        
+
         let packet = build_command_with_data(Command::EncryptionData as u8, &data);
         let response = self.send_command(&packet)?;
-        
+
         self.device_info.cid = response[9];
         self.device_info.mid = response[10];
         self.device_info.connection_type = ConnectionType::from(response[11]);
-        
+
         Ok(())
     }
-    
+
     pub fn set_dpi(&mut self, index: u8, value: u16) -> Result<(), Box<dyn std::error::Error>> {
         let address = FlashAddress::DpiValues as u16 + (index as u16 * 4);
         let data = encode_dpi(value);
-        
+
         let packet = build_flash_write(address, &data);
         self.send_command(&packet)?;
-        
+
         self.config.dpis[index as usize].value = value;
         Ok(())
     }
-    
+
     pub fn set_polling_rate(&mut self, hz: u16) -> Result<(), Box<dyn std::error::Error>> {
         let value = encode_report_rate(hz);
         let packet = build_single_byte_write(FlashAddress::ReportRate as u16, value);
         self.send_command(&packet)?;
-        
+
         self.config.report_rate = hz;
         Ok(())
     }
-    
+
     pub fn get_battery(&self) -> Result<BatteryStatus, Box<dyn std::error::Error>> {
         let packet = build_simple_command(Command::BatteryLevel as u8);
         let response = self.send_command(&packet)?;
-        
+
         Ok(BatteryStatus {
             level: response[5],
             charging: response[6] == 1,
@@ -1565,4 +1619,4 @@ impl ScyroxMouse {
 
 ---
 
-*End of Protocol Specification*
+_End of Protocol Specification_
