@@ -566,7 +566,8 @@ pub fn decode_report_rate(value: u8) -> u16 {
 
 /// Voltage to percentage lookup table (millivolts -> percentage).
 /// Per protocol spec section 5.4.
-const VOLTAGE_TABLE: [(u16, u8); 21] = [
+#[allow(dead_code)]
+const OFFICIAL_VOLTAGE_TABLE: [(u16, u8); 21] = [
     (3050, 0),
     (3420, 5),
     (3480, 10),
@@ -590,23 +591,56 @@ const VOLTAGE_TABLE: [(u16, u8); 21] = [
     (4110, 100),
 ];
 
+const CUSTOM_VOLTAGE_TABLE: [(u16, u8); 29] = [
+    (3009, 0),
+    (3251, 1),
+    (3356, 2),
+    (3446, 3),
+    (3501, 4),
+    (3548, 5),
+    (3588, 6),
+    (3620, 7),
+    (3644, 8),
+    (3664, 9),
+    (3669, 10),
+    (3698, 15),
+    (3714, 20),
+    (3734, 25),
+    (3748, 30),
+    (3766, 35),
+    (3782, 40),
+    (3800, 45),
+    (3821, 50),
+    (3841, 55),
+    (3864, 60),
+    (3895, 65),
+    (3928, 70),
+    (3962, 75),
+    (3996, 80),
+    (4040, 85),
+    (4081, 90),
+    (4129, 95),
+    (4197, 100),
+];
+
 /// Convert battery voltage (mV) to percentage using the lookup table.
 ///
-/// Per protocol spec section 5.4, uses linear interpolation between table values.
+/// Uses VOLTAGE_TABLE2 which provides finer granularity at low battery levels
+/// (1% steps from 0-10%, then 5% steps). Uses linear interpolation between table values.
 pub fn voltage_to_percentage_table(voltage_mv: u16) -> u8 {
     // Handle edge cases
-    if voltage_mv <= VOLTAGE_TABLE[0].0 {
-        return VOLTAGE_TABLE[0].1;
+    if voltage_mv <= CUSTOM_VOLTAGE_TABLE[0].0 {
+        return CUSTOM_VOLTAGE_TABLE[0].1;
     }
-    if voltage_mv >= VOLTAGE_TABLE[VOLTAGE_TABLE.len() - 1].0 {
-        return VOLTAGE_TABLE[VOLTAGE_TABLE.len() - 1].1;
+    if voltage_mv >= CUSTOM_VOLTAGE_TABLE[CUSTOM_VOLTAGE_TABLE.len() - 1].0 {
+        return CUSTOM_VOLTAGE_TABLE[CUSTOM_VOLTAGE_TABLE.len() - 1].1;
     }
 
     // Find the appropriate range and interpolate
-    for i in 1..VOLTAGE_TABLE.len() {
-        if voltage_mv <= VOLTAGE_TABLE[i].0 {
-            let (v0, p0) = VOLTAGE_TABLE[i - 1];
-            let (v1, p1) = VOLTAGE_TABLE[i];
+    for i in 1..CUSTOM_VOLTAGE_TABLE.len() {
+        if voltage_mv <= CUSTOM_VOLTAGE_TABLE[i].0 {
+            let (v0, p0) = CUSTOM_VOLTAGE_TABLE[i - 1];
+            let (v1, p1) = CUSTOM_VOLTAGE_TABLE[i];
             // Linear interpolation
             let ratio = (voltage_mv - v0) as f32 / (v1 - v0) as f32;
             let percentage = p0 as f32 + ratio * (p1 - p0) as f32;
@@ -791,15 +825,23 @@ mod tests {
 
     #[test]
     fn test_voltage_to_percentage_table() {
-        // Test values from the protocol spec lookup table
-        assert_eq!(voltage_to_percentage_table(3050), 0);
-        assert_eq!(voltage_to_percentage_table(3420), 5);
-        assert_eq!(voltage_to_percentage_table(3880), 50);
-        assert_eq!(voltage_to_percentage_table(4110), 100);
+        // Test exact values from VOLTAGE_TABLE2
+        assert_eq!(voltage_to_percentage_table(3009), 0);
+        assert_eq!(voltage_to_percentage_table(3669), 10);
+        assert_eq!(voltage_to_percentage_table(3821), 50);
+        assert_eq!(voltage_to_percentage_table(4197), 100);
         // Below minimum
         assert_eq!(voltage_to_percentage_table(3000), 0);
         // Above maximum
-        assert_eq!(voltage_to_percentage_table(4200), 100);
+        assert_eq!(voltage_to_percentage_table(4300), 100);
+        // Test interpolation (midpoint between 3669/10% and 3698/15%)
+        let mid_voltage = (3669 + 3698) / 2; // 3683
+        let mid_percent = voltage_to_percentage_table(mid_voltage);
+        assert!(
+            mid_percent > 10 && mid_percent < 15,
+            "Expected ~12-13%, got {}",
+            mid_percent
+        );
     }
 
     #[test]

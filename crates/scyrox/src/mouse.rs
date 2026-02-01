@@ -556,13 +556,9 @@ impl Mouse {
         // Check response status byte
         Self::check_response_status(&response)?;
 
-        // Per protocol spec (with Report ID offset):
-        // - Byte 6: Battery level percentage (0-100)
-        // - Byte 7: Charging status (0x01 = charging, 0x00 = not charging)
-        // - Bytes 8-9: Battery voltage in mV (big-endian)
-        let percentage = response[6];
         let charging = response[7] == 0x01;
         let voltage_mv = u16::from_be_bytes([response[8], response[9]]);
+        let percentage = crate::protocol::voltage_to_percentage_table(voltage_mv);
 
         debug!(voltage_mv, percentage, charging, "battery status retrieved");
         Ok(BatteryStatus {
