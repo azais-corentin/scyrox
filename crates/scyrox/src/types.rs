@@ -1972,6 +1972,27 @@ impl fmt::Display for HidKeyCode {
     }
 }
 
+/// Notifications received from the mouse.
+///
+/// These are either unsolicited messages from the device (like StatusChanged when
+/// the user presses the DPI button) or synthetic notifications (like Disconnected
+/// when the device is unplugged).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notification {
+    /// Settings changed on the device (e.g., DPI button pressed, profile switched).
+    ///
+    /// The flags indicate which settings changed. Use the accessor methods on
+    /// `StatusChangeFlags` to check specific changes.
+    StatusChanged(StatusChangeFlags),
+
+    /// Device was disconnected.
+    ///
+    /// After receiving this notification, all subsequent commands will fail with
+    /// `MouseError::Disconnected`. The `Mouse` handle should be dropped and a new
+    /// connection established via `Mouse::open()`.
+    Disconnected,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

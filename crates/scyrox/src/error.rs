@@ -68,6 +68,14 @@ pub enum MouseError {
     /// Device was disconnected during communication.
     #[error("Mouse disconnected. Please reconnect the device.")]
     Disconnected,
+
+    /// Internal communication channel was closed (IO task terminated).
+    #[error("Internal channel closed - device may have disconnected")]
+    ChannelClosed,
+
+    /// Background IO task panicked unexpectedly.
+    #[error("IO task panicked unexpectedly")]
+    TaskPanic,
 }
 
 /// Result type alias using MouseError.

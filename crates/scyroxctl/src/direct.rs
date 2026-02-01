@@ -1,10 +1,9 @@
 //! Direct USB backend for mouse communication.
 
-use std::sync::Mutex;
-
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, Mouse, MouseConfig, PollingRate};
+use tokio::sync::Mutex;
 
 use crate::backend::{Backend, DaemonInfo, ProfileInfo};
 
@@ -15,8 +14,8 @@ pub struct DirectBackend {
 
 impl DirectBackend {
     /// Create a new direct backend.
-    pub fn new() -> Result<Self> {
-        let mouse = Mouse::open()?;
+    pub async fn new() -> Result<Self> {
+        let mouse = Mouse::open().await?;
         Ok(Self {
             mouse: Mutex::new(mouse),
         })
@@ -26,18 +25,18 @@ impl DirectBackend {
 #[async_trait]
 impl Backend for DirectBackend {
     async fn get_config(&self) -> Result<MouseConfig> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.get_config()?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.get_config().await?)
     }
 
     async fn get_battery(&self) -> Result<BatteryStatus> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.get_battery()?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.get_battery().await?)
     }
 
     async fn get_firmware(&self) -> Result<FirmwareInfo> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.get_firmware_info()?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.get_firmware_info().await?)
     }
 
     async fn is_connected(&self) -> bool {
@@ -45,38 +44,38 @@ impl Backend for DirectBackend {
     }
 
     async fn set_polling_rate(&self, rate: PollingRate) -> Result<()> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.set_polling_rate(rate)?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_polling_rate(rate).await?)
     }
 
     async fn set_lift_off_distance(&self, lod: LiftOffDistance) -> Result<()> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.set_lift_off_distance(lod)?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_lift_off_distance(lod).await?)
     }
 
     async fn set_sleep_timeout(&self, seconds: u16) -> Result<()> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.set_sleep_timeout(seconds)?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_sleep_timeout(seconds).await?)
     }
 
     async fn set_angle_snapping(&self, enabled: bool) -> Result<()> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.set_angle_snapping(enabled)?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_angle_snapping(enabled).await?)
     }
 
     async fn set_ripple_control(&self, enabled: bool) -> Result<()> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.set_ripple_control(enabled)?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_ripple_control(enabled).await?)
     }
 
     async fn set_high_speed_mode(&self, enabled: bool) -> Result<()> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.set_high_speed_mode(enabled)?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_high_speed_mode(enabled).await?)
     }
 
     async fn set_long_distance_mode(&self, enabled: bool) -> Result<()> {
-        let mut mouse = self.mouse.lock().unwrap();
-        Ok(mouse.set_long_distance_mode(enabled)?)
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_long_distance_mode(enabled).await?)
     }
 
     // Profile operations are not available in direct mode

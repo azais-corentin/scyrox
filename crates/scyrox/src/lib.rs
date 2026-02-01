@@ -1,6 +1,6 @@
 //! Scyrox mouse configuration library.
 //!
-//! This library provides an API to read and write configuration settings
+//! This library provides an async API to read and write configuration settings
 //! for Scyrox gaming mice over USB.
 //!
 //! # Example
@@ -8,21 +8,23 @@
 //! ```no_run
 //! use scyrox::{Mouse, PollingRate};
 //!
-//! fn main() -> scyrox::Result<()> {
-//!     let mut mouse = Mouse::open()?;
+//! #[tokio::main]
+//! async fn main() -> scyrox::Result<()> {
+//!     let mouse = Mouse::open().await?;
 //!
 //!     // Read current configuration
-//!     let config = mouse.get_config()?;
+//!     let config = mouse.get_config().await?;
 //!     println!("Polling rate: {}", config.polling_rate);
 //!
 //!     // Change polling rate
-//!     mouse.set_polling_rate(PollingRate::Hz1000)?;
+//!     mouse.set_polling_rate(PollingRate::Hz1000).await?;
 //!
 //!     Ok(())
 //! }
 //! ```
 
 pub mod error;
+pub(crate) mod io;
 pub mod mouse;
 pub mod protocol;
 pub mod types;
@@ -47,6 +49,6 @@ pub use types::{
     DpiStage, DpiSwitchMode, FireKeyConfig, FirmwareInfo, HidKeyCode, KeyFunction, KeyFunctionType,
     LiftOffDistance, LightMode, LightSettings, Macro, MacroCycleMode, MacroEvent,
     MacroEventKeyType, MacroKeyConfig, MacroMouseButton, MediaKey, ModifierKey, MouseButton,
-    MouseConfig, PairStatus, PollingRate, ScrollWheelDirection, SensorMode, ShortcutKey,
-    ShortcutKeyEvent, ShortcutKeyType, SleepTime, StatusChangeFlags,
+    MouseConfig, Notification, PairStatus, PollingRate, ScrollWheelDirection, SensorMode,
+    ShortcutKey, ShortcutKeyEvent, ShortcutKeyType, SleepTime, StatusChangeFlags,
 };

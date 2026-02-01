@@ -8,4 +8,5 @@ description = "Core library for Scyrox mouse USB/HID communication"
 hex.workspace = true
 nusb.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true

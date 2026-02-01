@@ -80,7 +80,7 @@ async fn get_backend(cli: &Cli) -> Result<Box<dyn Backend>> {
     // If --direct flag is set, use direct USB access
     if cli.direct {
         debug!("Using direct USB backend (--direct flag)");
-        return Ok(Box::new(DirectBackend::new()?));
+        return Ok(Box::new(DirectBackend::new().await?));
     }
 
     // Try to connect to daemon first (auto-detect)
@@ -92,7 +92,7 @@ async fn get_backend(cli: &Cli) -> Result<Box<dyn Backend>> {
         Err(e) => {
             debug!("Daemon not available: {}", e);
             eprintln!("Note: Daemon not running, using direct USB access");
-            Ok(Box::new(DirectBackend::new()?))
+            Ok(Box::new(DirectBackend::new().await?))
         }
     }
 }

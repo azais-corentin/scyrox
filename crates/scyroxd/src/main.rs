@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
 
     // Create the gRPC service
     let (service, mut shutdown_rx, device_event_rx) =
-        ScyroxService::new(config, dirs, device_event_rx)?;
+        ScyroxService::new(config, dirs, device_event_rx).await?;
 
     // Spawn the device event handler task
     let event_handler = service.create_device_event_handler(device_event_rx);

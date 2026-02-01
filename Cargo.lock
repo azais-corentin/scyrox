@@ -982,6 +982,7 @@ dependencies = [
  "hex",
  "nusb",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 

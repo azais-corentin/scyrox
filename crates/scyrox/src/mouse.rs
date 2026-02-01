@@ -1,22 +1,13 @@
 //! Mouse communication and configuration API.
 
-use std::time::Duration;
-
-use nusb::transfer::{Buffer, ControlOut, ControlType, In, Interrupt, Recipient};
-use nusb::{Endpoint, Interface, MaybeFuture};
+use nusb::transfer::{In, Interrupt};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::error::{MouseError, Result};
+use crate::io::{Command, IoTask};
 use crate::protocol::*;
 use crate::types::*;
-
-/// Convert a TransferError to the appropriate MouseError.
-fn transfer_error_to_mouse_error(error: nusb::transfer::TransferError) -> MouseError {
-    match error {
-        nusb::transfer::TransferError::Disconnected => MouseError::Disconnected,
-        other => MouseError::Transfer(other),
-    }
-}
 
 /// Maximum number of key function slots.
 pub const KEY_FUNCTION_COUNT: usize = 8;
@@ -30,60 +21,102 @@ pub const MACRO_COUNT: usize = 8;
 /// Maximum sleep timeout in seconds (0xFF * 10).
 pub const MAX_SLEEP_TIMEOUT_SECONDS: u16 = 2550;
 
-/// Mouse device handle for communication.
+/// Channel capacity for pending commands.
+///
+/// 16 allows a reasonable queue of commands while preventing unbounded memory
+/// growth. In practice, commands are sent sequentially with responses awaited,
+/// so this capacity is rarely reached. The main use case is allowing multiple
+/// concurrent callers to queue commands without blocking.
+const COMMAND_CHANNEL_CAPACITY: usize = 16;
+
+/// Broadcast channel capacity for device notifications.
+///
+/// 32 provides buffer for burst notifications (e.g., rapid DPI button presses)
+/// while keeping memory bounded. Receivers that fall behind by more than 32
+/// messages will receive a `RecvError::Lagged` error and must handle it
+/// appropriately (typically by continuing to receive future messages).
+const NOTIFICATION_CHANNEL_CAPACITY: usize = 32;
+
+/// Mouse device handle for async communication.
+///
+/// The `Mouse` struct owns a background IO task that handles all USB communication.
+/// When dropped, the IO task will be signaled to shut down via channel closure.
+/// For explicit control over shutdown, use the [`shutdown`](Self::shutdown) method.
 pub struct Mouse {
-    interface: Interface,
-    endpoint: Endpoint<Interrupt, In>,
     mode: ConnectionMode,
+    command_tx: mpsc::Sender<Command>,
+    notification_tx: broadcast::Sender<Notification>,
+    task_handle: tokio::task::JoinHandle<()>,
 }
 
 impl Mouse {
     /// Open a connection to the mouse.
     ///
-    /// Searches for the mouse by vendor/product ID and claims the configuration interface.
+    /// This spawns a background IO task that handles USB communication.
+    /// The task runs until the device disconnects or the Mouse handle is dropped.
     #[instrument]
-    pub fn open() -> Result<Self> {
+    pub async fn open() -> Result<Self> {
         debug!("searching for mouse device");
 
-        // Find the mouse device
-        let (device_info, mode) = PRODUCT_IDS
-            .iter()
-            .find_map(|&pid| {
-                let device = nusb::list_devices()
-                    .wait()
-                    .ok()?
-                    .find(|d| d.vendor_id() == VENDOR_ID && d.product_id() == pid)?;
-                let mode = match pid {
-                    PID_WIRED => ConnectionMode::Wired,
-                    PID_WIRELESS_4K | PID_WIRELESS_STD => ConnectionMode::Wireless,
-                    _ => ConnectionMode::Wireless,
-                };
-                Some((device, mode))
-            })
-            .ok_or_else(|| {
-                error!(vid = VENDOR_ID, ?PRODUCT_IDS, "mouse device not found");
-                MouseError::NotFound {
-                    vid: VENDOR_ID,
-                    pids: PRODUCT_IDS.to_vec(),
+        // Find the mouse device by searching for each known product ID
+        let mut device_info = None;
+        let mut mode = ConnectionMode::Wireless;
+
+        for pid in PRODUCT_IDS {
+            if let Ok(mut devices) = nusb::list_devices().await {
+                if let Some(dev) =
+                    devices.find(|d| d.vendor_id() == VENDOR_ID && d.product_id() == pid)
+                {
+                    mode = match pid {
+                        PID_WIRED => ConnectionMode::Wired,
+                        PID_WIRELESS_4K | PID_WIRELESS_STD => ConnectionMode::Wireless,
+                        _ => ConnectionMode::Wireless,
+                    };
+                    device_info = Some(dev);
+                    break;
                 }
-            })?;
+            }
+        }
+
+        let device_info = device_info.ok_or_else(|| {
+            error!(vid = VENDOR_ID, ?PRODUCT_IDS, "mouse device not found");
+            MouseError::NotFound {
+                vid: VENDOR_ID,
+                pids: PRODUCT_IDS.to_vec(),
+            }
+        })?;
 
         debug!(?mode, "found mouse device");
 
-        let device = device_info.open().wait()?;
+        let device = device_info.open().await?;
 
         // Detach kernel driver and claim interface
-        let interface = device.detach_and_claim_interface(INTERFACE_NUM).wait()?;
+        let interface = device.detach_and_claim_interface(INTERFACE_NUM).await?;
 
         // Create interrupt endpoint for responses
         let endpoint = interface.endpoint::<Interrupt, In>(INTERRUPT_EP_IN)?;
 
-        info!(?mode, "mouse connection established");
+        // Create channels
+        let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+        let (notification_tx, _) = broadcast::channel(NOTIFICATION_CHANNEL_CAPACITY);
 
-        Ok(Mouse {
+        // Spawn IO task
+        let io_task = IoTask::new(
             interface,
             endpoint,
             mode,
+            command_rx,
+            notification_tx.clone(),
+        );
+        let task_handle = tokio::spawn(io_task.run());
+
+        info!(?mode, "mouse connection established");
+
+        Ok(Mouse {
+            mode,
+            command_tx,
+            notification_tx,
+            task_handle,
         })
     }
 
@@ -91,6 +124,70 @@ impl Mouse {
     pub fn connection_mode(&self) -> ConnectionMode {
         trace!(mode = ?self.mode, "returning connection mode");
         self.mode
+    }
+
+    /// Subscribe to device notifications.
+    ///
+    /// Returns a receiver that will receive `Notification::StatusChanged` when the device
+    /// sends unsolicited status updates, and `Notification::Disconnected` when the device
+    /// is unplugged.
+    pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
+        self.notification_tx.subscribe()
+    }
+
+    // =========================================================================
+    // Lifecycle Management
+    // =========================================================================
+
+    /// Check if the IO task is still running.
+    ///
+    /// Returns `false` if the task has completed (due to disconnection, error,
+    /// or shutdown). Note that this only checks if the task has finished; it
+    /// does not probe the device for connectivity.
+    pub fn is_running(&self) -> bool {
+        !self.task_handle.is_finished()
+    }
+
+    /// Gracefully shut down the mouse connection.
+    ///
+    /// This closes the command channel, signals the IO task to terminate,
+    /// and waits for it to complete. Any pending commands will receive a
+    /// `ChannelClosed` error.
+    ///
+    /// This method consumes `self`, ensuring no further operations can be
+    /// performed after shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(MouseError::TaskPanic)` if the IO task panicked.
+    #[instrument(skip(self))]
+    pub async fn shutdown(self) -> Result<()> {
+        info!("shutting down mouse connection");
+
+        // Drop the command channel to signal the IO task to exit
+        drop(self.command_tx);
+
+        // Wait for the task to complete
+        self.task_handle.await.map_err(|_| {
+            error!("IO task panicked during shutdown");
+            MouseError::TaskPanic
+        })?;
+
+        info!("mouse connection shut down successfully");
+        Ok(())
+    }
+
+    /// Abort the IO task immediately without waiting.
+    ///
+    /// This forcefully terminates the IO task. Use [`shutdown`](Self::shutdown)
+    /// for graceful termination. This is useful in scenarios where you cannot
+    /// await (e.g., in a `Drop` implementation via `spawn`).
+    ///
+    /// This method consumes `self`, ensuring no further operations can be
+    /// performed after abort.
+    pub fn abort(self) {
+        warn!("aborting mouse IO task");
+        self.task_handle.abort();
     }
 
     // =========================================================================
@@ -102,94 +199,28 @@ impl Mouse {
     /// The protocol uses single-packet request/response. Each command
     /// receives exactly one 16-byte response packet (17 bytes with report ID).
     #[instrument(skip(self, cmd))]
-    fn send_command(&mut self, cmd: &[u8; PACKET_LENGTH]) -> Result<Vec<u8>> {
+    async fn send_command(&self, cmd: &[u8; PACKET_LENGTH]) -> Result<Vec<u8>> {
         trace!(?cmd, "sending command");
-        let packet_size = self.mode.packet_size();
 
-        // Prepend report ID to command packet for HID transfer
-        let mut report = [0u8; PACKET_LENGTH + 1];
-        report[0] = REPORT_ID;
-        report[1..].copy_from_slice(cmd);
+        let (response_tx, response_rx) = oneshot::channel();
 
-        // Submit read buffer BEFORE sending command (required for interrupt endpoints)
-        let buf = Buffer::new(packet_size);
-        self.endpoint.submit(buf);
+        self.command_tx
+            .send(Command {
+                packet: *cmd,
+                response_tx,
+            })
+            .await
+            .map_err(|_| MouseError::ChannelClosed)?;
 
-        // Send command via control transfer
-        let result = self
-            .interface
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: 0x09, // SET_REPORT
-                    value: 0x0208, // Report Type (Output=2) | Report ID (0x08)
-                    index: INTERFACE_NUM as u16,
-                    data: &report,
-                },
-                Duration::from_millis(100),
-            )
-            .wait();
-
-        if let Err(e) = result {
-            // Check if it's a disconnection error
-            if e == nusb::transfer::TransferError::Disconnected {
-                error!("device disconnected during control transfer");
-                return Err(MouseError::Disconnected);
-            }
-
-            warn!("control transfer with Class request failed, trying Vendor request");
-            self.interface
-                .control_out(
-                    ControlOut {
-                        control_type: ControlType::Vendor,
-                        recipient: Recipient::Interface,
-                        request: 0x09,
-                        value: 0x0208,
-                        index: INTERFACE_NUM as u16,
-                        data: &report,
-                    },
-                    Duration::from_millis(100),
-                )
-                .wait()
-                .map_err(transfer_error_to_mouse_error)?;
-        }
-
-        // Wait for single response packet
-        let Some(completion) = self.endpoint.wait_next_complete(Duration::from_millis(200)) else {
-            return Err(match self.mode {
-                ConnectionMode::Wireless => {
-                    debug!("timeout waiting for response - mouse may be sleeping");
-                    MouseError::DeviceOffline
-                }
-                ConnectionMode::Wired => {
-                    error!("timeout waiting for response");
-                    MouseError::Timeout
-                }
-            });
-        };
-
-        if let Err(transfer_error) = completion.status {
-            error!(?transfer_error, "USB transfer failed");
-            return Err(transfer_error_to_mouse_error(transfer_error));
-        }
-
-        let bytes_read = completion.buffer.len();
-        if bytes_read == 0 {
-            error!("empty response received");
-            return Err(MouseError::Timeout);
-        }
-
-        debug!(bytes_read, "command completed successfully");
-        Ok(completion.buffer[..bytes_read].to_vec())
+        response_rx.await.map_err(|_| MouseError::ChannelClosed)?
     }
 
     /// Send a status command (used before writes to sync with device).
     #[instrument(skip(self))]
-    fn send_status_sync(&mut self) -> Result<()> {
+    async fn send_status_sync(&self) -> Result<()> {
         trace!("sending status sync command");
         let cmd = build_status_cmd();
-        let _ = self.send_command(&cmd)?;
+        let _ = self.send_command(&cmd).await?;
         trace!("status sync completed");
         Ok(())
     }
@@ -235,13 +266,13 @@ impl Mouse {
     /// Per protocol spec section 5.8, we verify that bytes 0-4 of the response
     /// match the request before accepting data.
     #[instrument(skip(self))]
-    fn read_memory(&mut self, offset: u16, length: u8) -> Result<Vec<u8>> {
+    async fn read_memory(&self, offset: u16, length: u8) -> Result<Vec<u8>> {
         debug!(
             offset = format!("0x{:04X}", offset),
             length, "reading memory"
         );
         let cmd = build_memory_read(offset, length);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         // Response includes report ID at byte 0, so minimum length is 6 + data
         // Byte 0: report ID, Byte 1: cmd, Byte 2: status, Bytes 3-4: addr, Byte 5: len, Byte 6+: data
@@ -307,9 +338,9 @@ impl Mouse {
 
     /// Read a single byte from memory.
     #[instrument(skip(self))]
-    fn read_memory_byte(&mut self, offset: u16) -> Result<u8> {
+    async fn read_memory_byte(&self, offset: u16) -> Result<u8> {
         trace!(offset = format!("0x{:04X}", offset), "reading single byte");
-        let data = self.read_memory(offset, 1)?;
+        let data = self.read_memory(offset, 1).await?;
         trace!(value = format!("0x{:02X}", data[0]), "byte read completed");
         Ok(data[0])
     }
@@ -323,7 +354,7 @@ impl Mouse {
     /// - Byte 1: Command ID echo (0x07)
     /// - Byte 2: Status (0x00 = success)
     #[instrument(skip(self))]
-    fn write_memory(&mut self, offset: u16, value: u8) -> Result<()> {
+    async fn write_memory(&self, offset: u16, value: u8) -> Result<()> {
         debug!(
             offset = format!("0x{:04X}", offset),
             value = format!("0x{:02X}", value),
@@ -331,11 +362,11 @@ impl Mouse {
         );
 
         // Send status command first (observed in all write sequences)
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         // Now send the write command
         let cmd = build_memory_write(offset, value);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         // Validate response echoes the command (command is at byte 1 after report ID)
         if response.len() < 2 {
@@ -378,9 +409,9 @@ impl Mouse {
 
     /// Get the current polling rate.
     #[instrument(skip(self))]
-    pub fn get_polling_rate(&mut self) -> Result<PollingRate> {
+    pub async fn get_polling_rate(&self) -> Result<PollingRate> {
         debug!("getting polling rate");
-        let byte = self.read_memory_byte(OFFSET_POLLING_RATE)?;
+        let byte = self.read_memory_byte(OFFSET_POLLING_RATE).await?;
         match PollingRate::from_byte(byte) {
             Some(rate) => {
                 debug!(?rate, "polling rate retrieved");
@@ -395,9 +426,9 @@ impl Mouse {
 
     /// Get the current lift-off distance.
     #[instrument(skip(self))]
-    pub fn get_lift_off_distance(&mut self) -> Result<LiftOffDistance> {
+    pub async fn get_lift_off_distance(&self) -> Result<LiftOffDistance> {
         debug!("getting lift-off distance");
-        let byte = self.read_memory_byte(OFFSET_LIFT_OFF_DISTANCE)?;
+        let byte = self.read_memory_byte(OFFSET_LIFT_OFF_DISTANCE).await?;
         match LiftOffDistance::from_byte(byte) {
             Some(lod) => {
                 debug!(?lod, "lift-off distance retrieved");
@@ -412,9 +443,9 @@ impl Mouse {
 
     /// Get the current sleep timeout in seconds.
     #[instrument(skip(self))]
-    pub fn get_sleep_timeout(&mut self) -> Result<u16> {
+    pub async fn get_sleep_timeout(&self) -> Result<u16> {
         debug!("getting sleep timeout");
-        let byte = self.read_memory_byte(OFFSET_SLEEP_TIMEOUT)?;
+        let byte = self.read_memory_byte(OFFSET_SLEEP_TIMEOUT).await?;
         let seconds = (byte as u16) * 10;
         debug!(seconds, "sleep timeout retrieved");
         Ok(seconds)
@@ -422,9 +453,9 @@ impl Mouse {
 
     /// Get angle snapping state.
     #[instrument(skip(self))]
-    pub fn get_angle_snapping(&mut self) -> Result<bool> {
+    pub async fn get_angle_snapping(&self) -> Result<bool> {
         debug!("getting angle snapping state");
-        let byte = self.read_memory_byte(OFFSET_ANGLE_SNAPPING)?;
+        let byte = self.read_memory_byte(OFFSET_ANGLE_SNAPPING).await?;
         let enabled = byte == 0x01;
         debug!(enabled, "angle snapping state retrieved");
         Ok(enabled)
@@ -432,9 +463,9 @@ impl Mouse {
 
     /// Get ripple control state.
     #[instrument(skip(self))]
-    pub fn get_ripple_control(&mut self) -> Result<bool> {
+    pub async fn get_ripple_control(&self) -> Result<bool> {
         debug!("getting ripple control state");
-        let byte = self.read_memory_byte(OFFSET_RIPPLE_CONTROL)?;
+        let byte = self.read_memory_byte(OFFSET_RIPPLE_CONTROL).await?;
         let enabled = byte == 0x01;
         debug!(enabled, "ripple control state retrieved");
         Ok(enabled)
@@ -442,9 +473,9 @@ impl Mouse {
 
     /// Get high speed mode state.
     #[instrument(skip(self))]
-    pub fn get_high_speed_mode(&mut self) -> Result<bool> {
+    pub async fn get_high_speed_mode(&self) -> Result<bool> {
         debug!("getting high speed mode state");
-        let byte = self.read_memory_byte(OFFSET_HIGH_SPEED_MODE)?;
+        let byte = self.read_memory_byte(OFFSET_HIGH_SPEED_MODE).await?;
         let enabled = byte == 0x01;
         debug!(enabled, "high speed mode state retrieved");
         Ok(enabled)
@@ -460,10 +491,10 @@ impl Mouse {
     ///
     /// Returns `Err(NotSupported)` if the device doesn't support long range mode.
     #[instrument(skip(self))]
-    pub fn get_long_distance_mode(&mut self) -> Result<bool> {
+    pub async fn get_long_distance_mode(&self) -> Result<bool> {
         debug!("getting long distance mode state");
         let cmd = build_get_long_range_cmd();
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 7 {
             error!(
@@ -492,22 +523,22 @@ impl Mouse {
 
     /// Get the full mouse configuration.
     #[instrument(skip(self))]
-    pub fn get_config(&mut self) -> Result<MouseConfig> {
+    pub async fn get_config(&self) -> Result<MouseConfig> {
         info!("retrieving full mouse configuration");
         let config = MouseConfig {
-            polling_rate: self.get_polling_rate()?,
-            lift_off_distance: self.get_lift_off_distance()?,
-            sleep_timeout_seconds: self.get_sleep_timeout()?,
-            angle_snapping: self.get_angle_snapping()?,
-            ripple_control: self.get_ripple_control()?,
-            high_speed_mode: self.get_high_speed_mode()?,
-            long_distance_mode: self.get_long_distance_mode()?,
-            debounce_time: self.get_debounce_time()?,
-            motion_sync: self.get_motion_sync()?,
-            moving_off_light_time: self.get_moving_off_light_time()?,
-            performance_time: self.get_performance_time()?,
-            sensor_mode: self.get_sensor_mode()?,
-            sensor_20k: self.get_sensor_20k_mode()?,
+            polling_rate: self.get_polling_rate().await?,
+            lift_off_distance: self.get_lift_off_distance().await?,
+            sleep_timeout_seconds: self.get_sleep_timeout().await?,
+            angle_snapping: self.get_angle_snapping().await?,
+            ripple_control: self.get_ripple_control().await?,
+            high_speed_mode: self.get_high_speed_mode().await?,
+            long_distance_mode: self.get_long_distance_mode().await?,
+            debounce_time: self.get_debounce_time().await?,
+            motion_sync: self.get_motion_sync().await?,
+            moving_off_light_time: self.get_moving_off_light_time().await?,
+            performance_time: self.get_performance_time().await?,
+            sensor_mode: self.get_sensor_mode().await?,
+            sensor_20k: self.get_sensor_20k_mode().await?,
         };
         info!("mouse configuration retrieved successfully");
         Ok(config)
@@ -524,10 +555,10 @@ impl Mouse {
     /// - Byte 8: Voltage high byte
     /// - Byte 9: Voltage low byte
     #[instrument(skip(self))]
-    pub fn get_battery(&mut self) -> Result<BatteryStatus> {
+    pub async fn get_battery(&self) -> Result<BatteryStatus> {
         debug!("getting battery status");
         let cmd = build_battery_cmd();
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 10 {
             error!(
@@ -570,12 +601,12 @@ impl Mouse {
 
     /// Get firmware version information.
     #[instrument(skip(self))]
-    pub fn get_firmware_info(&mut self) -> Result<FirmwareInfo> {
+    pub async fn get_firmware_info(&self) -> Result<FirmwareInfo> {
         debug!("getting firmware information");
 
         // Mouse firmware
         let mouse_cmd = build_mouse_firmware_cmd();
-        let mouse_response = self.send_command(&mouse_cmd)?;
+        let mouse_response = self.send_command(&mouse_cmd).await?;
 
         // Response format (with report ID at byte 0):
         // - Byte 0: Report ID (0x08)
@@ -599,7 +630,7 @@ impl Mouse {
 
         // Receiver firmware (only meaningful in wireless mode)
         let receiver_cmd = build_receiver_firmware_cmd();
-        let receiver_response = self.send_command(&receiver_cmd)?;
+        let receiver_response = self.send_command(&receiver_cmd).await?;
 
         let receiver_version = match self.mode {
             ConnectionMode::Wireless => {
@@ -637,31 +668,31 @@ impl Mouse {
 
     /// Get the current DPI count (number of active DPI stages).
     #[instrument(skip(self))]
-    pub fn get_dpi_count(&mut self) -> Result<u8> {
+    pub async fn get_dpi_count(&self) -> Result<u8> {
         debug!("getting DPI count");
-        let byte = self.read_memory_byte(OFFSET_MAX_DPI)?;
+        let byte = self.read_memory_byte(OFFSET_MAX_DPI).await?;
         debug!(dpi_count = byte, "DPI count retrieved");
         Ok(byte)
     }
 
     /// Get the current DPI index (0-7).
     #[instrument(skip(self))]
-    pub fn get_current_dpi_index(&mut self) -> Result<u8> {
+    pub async fn get_current_dpi_index(&self) -> Result<u8> {
         debug!("getting current DPI index");
-        let byte = self.read_memory_byte(OFFSET_CURRENT_DPI)?;
+        let byte = self.read_memory_byte(OFFSET_CURRENT_DPI).await?;
         debug!(dpi_index = byte, "current DPI index retrieved");
         Ok(byte)
     }
 
     /// Get a specific DPI stage value.
     #[instrument(skip(self))]
-    pub fn get_dpi_value(&mut self, stage: u8) -> Result<u16> {
+    pub async fn get_dpi_value(&self, stage: u8) -> Result<u16> {
         if stage >= 8 {
             return Err(MouseError::InvalidDpiStage(stage));
         }
         debug!(stage, "getting DPI value");
         let address = OFFSET_DPI_VALUES + (stage as u16 * 4);
-        let data = self.read_memory(address, 4)?;
+        let data = self.read_memory(address, 4).await?;
         let dpi = decode_dpi(&[data[0], data[1], data[2], data[3]]);
         debug!(stage, dpi, "DPI value retrieved");
         Ok(dpi)
@@ -669,13 +700,13 @@ impl Mouse {
 
     /// Get a specific DPI stage color.
     #[instrument(skip(self))]
-    pub fn get_dpi_color(&mut self, stage: u8) -> Result<[u8; 3]> {
+    pub async fn get_dpi_color(&self, stage: u8) -> Result<[u8; 3]> {
         if stage >= 8 {
             return Err(MouseError::InvalidDpiStage(stage));
         }
         debug!(stage, "getting DPI color");
         let address = OFFSET_DPI_COLORS + (stage as u16 * 4);
-        let data = self.read_memory(address, 4)?;
+        let data = self.read_memory(address, 4).await?;
         let color = [data[0], data[1], data[2]];
         debug!(stage, ?color, "DPI color retrieved");
         Ok(color)
@@ -683,14 +714,14 @@ impl Mouse {
 
     /// Get all DPI stages.
     #[instrument(skip(self))]
-    pub fn get_dpi_stages(&mut self) -> Result<Vec<DpiStage>> {
+    pub async fn get_dpi_stages(&self) -> Result<Vec<DpiStage>> {
         debug!("getting all DPI stages");
-        let count = self.get_dpi_count()?;
+        let count = self.get_dpi_count().await?;
         let mut stages = Vec::with_capacity(count as usize);
 
         for i in 0..count {
-            let value = self.get_dpi_value(i)?;
-            let color = self.get_dpi_color(i)?;
+            let value = self.get_dpi_value(i).await?;
+            let color = self.get_dpi_color(i).await?;
             stages.push(DpiStage { value, color });
         }
 
@@ -700,18 +731,18 @@ impl Mouse {
 
     /// Get debounce time in milliseconds.
     #[instrument(skip(self))]
-    pub fn get_debounce_time(&mut self) -> Result<u8> {
+    pub async fn get_debounce_time(&self) -> Result<u8> {
         debug!("getting debounce time");
-        let byte = self.read_memory_byte(OFFSET_DEBOUNCE_TIME)?;
+        let byte = self.read_memory_byte(OFFSET_DEBOUNCE_TIME).await?;
         debug!(debounce_ms = byte, "debounce time retrieved");
         Ok(byte)
     }
 
     /// Get motion sync state.
     #[instrument(skip(self))]
-    pub fn get_motion_sync(&mut self) -> Result<bool> {
+    pub async fn get_motion_sync(&self) -> Result<bool> {
         debug!("getting motion sync state");
-        let byte = self.read_memory_byte(OFFSET_MOTION_SYNC)?;
+        let byte = self.read_memory_byte(OFFSET_MOTION_SYNC).await?;
         let enabled = byte == 0x01;
         debug!(enabled, "motion sync state retrieved");
         Ok(enabled)
@@ -719,9 +750,9 @@ impl Mouse {
 
     /// Get 20K sensor mode state.
     #[instrument(skip(self))]
-    pub fn get_sensor_20k_mode(&mut self) -> Result<bool> {
+    pub async fn get_sensor_20k_mode(&self) -> Result<bool> {
         debug!("getting 20K sensor mode state");
-        let byte = self.read_memory_byte(OFFSET_SENSOR_20K)?;
+        let byte = self.read_memory_byte(OFFSET_SENSOR_20K).await?;
         let enabled = byte == 0x01;
         debug!(enabled, "20K sensor mode state retrieved");
         Ok(enabled)
@@ -729,9 +760,9 @@ impl Mouse {
 
     /// Get sensor mode (low power vs high performance).
     #[instrument(skip(self))]
-    pub fn get_sensor_mode(&mut self) -> Result<SensorMode> {
+    pub async fn get_sensor_mode(&self) -> Result<SensorMode> {
         debug!("getting sensor mode");
-        let byte = self.read_memory_byte(OFFSET_SENSOR_MODE)?;
+        let byte = self.read_memory_byte(OFFSET_SENSOR_MODE).await?;
         match SensorMode::from_byte(byte) {
             Some(mode) => {
                 debug!(?mode, "sensor mode retrieved");
@@ -747,10 +778,10 @@ impl Mouse {
 
     /// Get light settings.
     #[instrument(skip(self))]
-    pub fn get_light_settings(&mut self) -> Result<LightSettings> {
+    pub async fn get_light_settings(&self) -> Result<LightSettings> {
         debug!("getting light settings");
-        let data = self.read_memory(OFFSET_LIGHT_SETTINGS, 7)?;
-        let state_byte = self.read_memory_byte(OFFSET_LIGHT_STATE)?;
+        let data = self.read_memory(OFFSET_LIGHT_SETTINGS, 7).await?;
+        let state_byte = self.read_memory_byte(OFFSET_LIGHT_STATE).await?;
 
         let mode = LightMode::from_byte(data[0]).unwrap_or(LightMode::Off);
         let color = [data[1], data[2], data[3]];
@@ -771,13 +802,13 @@ impl Mouse {
 
     /// Get DPI effect settings.
     #[instrument(skip(self))]
-    pub fn get_dpi_effect_settings(&mut self) -> Result<DpiEffectSettings> {
+    pub async fn get_dpi_effect_settings(&self) -> Result<DpiEffectSettings> {
         debug!("getting DPI effect settings");
 
-        let mode_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_MODE)?;
-        let brightness_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_BRIGHTNESS)?;
-        let speed_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_SPEED)?;
-        let state_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_STATE)?;
+        let mode_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_MODE).await?;
+        let brightness_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_BRIGHTNESS).await?;
+        let speed_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_SPEED).await?;
+        let state_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_STATE).await?;
 
         let mode = DpiEffectMode::from_byte(mode_byte).unwrap_or(DpiEffectMode::Off);
         let brightness = decode_brightness(brightness_byte);
@@ -796,13 +827,13 @@ impl Mouse {
 
     /// Get a specific key function (0-7).
     #[instrument(skip(self))]
-    pub fn get_key_function(&mut self, key_index: u8) -> Result<KeyFunction> {
+    pub async fn get_key_function(&self, key_index: u8) -> Result<KeyFunction> {
         if key_index >= KEY_FUNCTION_COUNT as u8 {
             return Err(MouseError::InvalidDpiStage(key_index)); // Reuse error for invalid index
         }
         debug!(key_index, "getting key function");
         let address = OFFSET_KEY_FUNCTIONS + (key_index as u16 * 4);
-        let data = self.read_memory(address, 4)?;
+        let data = self.read_memory(address, 4).await?;
         let bytes = [data[0], data[1], data[2], data[3]];
 
         let function = KeyFunction::decode(&bytes).unwrap_or_default();
@@ -812,12 +843,12 @@ impl Mouse {
 
     /// Get all key functions.
     #[instrument(skip(self))]
-    pub fn get_all_key_functions(&mut self) -> Result<[KeyFunction; KEY_FUNCTION_COUNT]> {
+    pub async fn get_all_key_functions(&self) -> Result<[KeyFunction; KEY_FUNCTION_COUNT]> {
         debug!("getting all key functions");
         let mut functions = [KeyFunction::default(); KEY_FUNCTION_COUNT];
 
         for i in 0..KEY_FUNCTION_COUNT {
-            functions[i] = self.get_key_function(i as u8)?;
+            functions[i] = self.get_key_function(i as u8).await?;
         }
 
         debug!("all key functions retrieved");
@@ -826,18 +857,18 @@ impl Mouse {
 
     /// Get moving off light time.
     #[instrument(skip(self))]
-    pub fn get_moving_off_light_time(&mut self) -> Result<u8> {
+    pub async fn get_moving_off_light_time(&self) -> Result<u8> {
         debug!("getting moving off light time");
-        let byte = self.read_memory_byte(OFFSET_MOVING_OFF_LIGHT)?;
+        let byte = self.read_memory_byte(OFFSET_MOVING_OFF_LIGHT).await?;
         debug!(time = byte, "moving off light time retrieved");
         Ok(byte)
     }
 
     /// Get performance/sleep time value.
     #[instrument(skip(self))]
-    pub fn get_performance_time(&mut self) -> Result<SleepTime> {
+    pub async fn get_performance_time(&self) -> Result<SleepTime> {
         debug!("getting performance time");
-        let byte = self.read_memory_byte(OFFSET_PERFORMANCE_TIME)?;
+        let byte = self.read_memory_byte(OFFSET_PERFORMANCE_TIME).await?;
         match SleepTime::from_byte(byte) {
             Some(time) => {
                 debug!(?time, "performance time retrieved");
@@ -852,7 +883,7 @@ impl Mouse {
 
     /// Get a shortcut key definition (0-7).
     #[instrument(skip(self))]
-    pub fn get_shortcut_key(&mut self, slot: u8) -> Result<ShortcutKey> {
+    pub async fn get_shortcut_key(&self, slot: u8) -> Result<ShortcutKey> {
         if slot >= SHORTCUT_KEY_COUNT as u8 {
             return Err(MouseError::InvalidDpiStage(slot));
         }
@@ -862,10 +893,10 @@ impl Mouse {
         let mut data = [0u8; 32];
 
         // Read in chunks of 10 bytes (max per read command)
-        let chunk1 = self.read_memory(address, 10)?;
-        let chunk2 = self.read_memory(address + 10, 10)?;
-        let chunk3 = self.read_memory(address + 20, 10)?;
-        let chunk4 = self.read_memory(address + 30, 2)?;
+        let chunk1 = self.read_memory(address, 10).await?;
+        let chunk2 = self.read_memory(address + 10, 10).await?;
+        let chunk3 = self.read_memory(address + 20, 10).await?;
+        let chunk4 = self.read_memory(address + 30, 2).await?;
 
         data[0..10].copy_from_slice(&chunk1);
         data[10..20].copy_from_slice(&chunk2);
@@ -883,7 +914,7 @@ impl Mouse {
 
     /// Get a macro definition (0-7).
     #[instrument(skip(self))]
-    pub fn get_macro(&mut self, slot: u8) -> Result<Macro> {
+    pub async fn get_macro(&self, slot: u8) -> Result<Macro> {
         if slot >= MACRO_COUNT as u8 {
             return Err(MouseError::InvalidDpiStage(slot));
         }
@@ -897,7 +928,7 @@ impl Mouse {
         while offset < Macro::SLOT_SIZE as u16 {
             let remaining = Macro::SLOT_SIZE as u16 - offset;
             let chunk_len = remaining.min(10) as u8;
-            let chunk = self.read_memory(base_address + offset, chunk_len)?;
+            let chunk = self.read_memory(base_address + offset, chunk_len).await?;
             data[offset as usize..offset as usize + chunk.len()].copy_from_slice(&chunk);
             offset += chunk_len as u16;
         }
@@ -915,14 +946,14 @@ impl Mouse {
     /// This is useful for debugging or making a full backup of the configuration.
     /// Per protocol spec section 8.2, reads are done in 10-byte chunks.
     #[instrument(skip(self))]
-    pub fn read_full_flash(&mut self) -> Result<[u8; 256]> {
+    pub async fn read_full_flash(&self) -> Result<[u8; 256]> {
         debug!("reading full flash memory");
         let mut flash = [0u8; 256];
         let mut address = 0u16;
 
         while address < 256 {
             let len = (256 - address).min(10) as u8;
-            let data = self.read_memory(address, len)?;
+            let data = self.read_memory(address, len).await?;
             flash[address as usize..address as usize + len as usize].copy_from_slice(&data);
             address += len as u16;
         }
@@ -933,10 +964,10 @@ impl Mouse {
 
     /// Get the current profile index (0-3).
     #[instrument(skip(self))]
-    pub fn get_current_profile(&mut self) -> Result<u8> {
+    pub async fn get_current_profile(&self) -> Result<u8> {
         debug!("getting current profile");
         let cmd = build_get_current_config_cmd();
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 7 {
             error!(
@@ -969,10 +1000,10 @@ impl Mouse {
 
     /// Check if mouse is online (connected to dongle, for wireless).
     #[instrument(skip(self))]
-    pub fn check_online(&mut self) -> Result<bool> {
+    pub async fn check_online(&self) -> Result<bool> {
         debug!("checking if mouse is online");
         let cmd = build_status_cmd();
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 7 {
             error!(
@@ -993,10 +1024,10 @@ impl Mouse {
 
     /// Get device address (for wireless pairing identification).
     #[instrument(skip(self))]
-    pub fn get_device_address(&mut self) -> Result<[u8; 3]> {
+    pub async fn get_device_address(&self) -> Result<[u8; 3]> {
         debug!("getting device address");
         let cmd = build_status_cmd();
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 10 {
             error!(
@@ -1027,18 +1058,20 @@ impl Mouse {
 
     /// Set the polling rate.
     #[instrument(skip(self))]
-    pub fn set_polling_rate(&mut self, rate: PollingRate) -> Result<()> {
+    pub async fn set_polling_rate(&self, rate: PollingRate) -> Result<()> {
         info!(?rate, "setting polling rate");
-        self.write_memory(OFFSET_POLLING_RATE, rate.to_byte())?;
+        self.write_memory(OFFSET_POLLING_RATE, rate.to_byte())
+            .await?;
         info!(?rate, "polling rate set successfully");
         Ok(())
     }
 
     /// Set the lift-off distance.
     #[instrument(skip(self))]
-    pub fn set_lift_off_distance(&mut self, lod: LiftOffDistance) -> Result<()> {
+    pub async fn set_lift_off_distance(&self, lod: LiftOffDistance) -> Result<()> {
         info!(?lod, "setting lift-off distance");
-        self.write_memory(OFFSET_LIFT_OFF_DISTANCE, lod.to_byte())?;
+        self.write_memory(OFFSET_LIFT_OFF_DISTANCE, lod.to_byte())
+            .await?;
         info!(?lod, "lift-off distance set successfully");
         Ok(())
     }
@@ -1048,7 +1081,7 @@ impl Mouse {
     /// Must be a multiple of 10. Maximum value is 2550 seconds.
     /// The value is written to both the primary and secondary memory locations.
     #[instrument(skip(self))]
-    pub fn set_sleep_timeout(&mut self, seconds: u16) -> Result<()> {
+    pub async fn set_sleep_timeout(&self, seconds: u16) -> Result<()> {
         info!(seconds, "setting sleep timeout");
 
         if seconds > MAX_SLEEP_TIMEOUT_SECONDS {
@@ -1064,9 +1097,10 @@ impl Mouse {
         trace!(raw_value = value, "calculated raw timeout value");
 
         // Write to secondary location first (as observed in dumps)
-        self.write_memory(OFFSET_SLEEP_TIMEOUT_SECONDARY, value)?;
+        self.write_memory(OFFSET_SLEEP_TIMEOUT_SECONDARY, value)
+            .await?;
         // Then write to primary location
-        self.write_memory(OFFSET_SLEEP_TIMEOUT, value)?;
+        self.write_memory(OFFSET_SLEEP_TIMEOUT, value).await?;
 
         info!(seconds, "sleep timeout set successfully");
         Ok(())
@@ -1074,27 +1108,30 @@ impl Mouse {
 
     /// Set angle snapping state.
     #[instrument(skip(self))]
-    pub fn set_angle_snapping(&mut self, enabled: bool) -> Result<()> {
+    pub async fn set_angle_snapping(&self, enabled: bool) -> Result<()> {
         info!(enabled, "setting angle snapping");
-        self.write_memory(OFFSET_ANGLE_SNAPPING, if enabled { 0x01 } else { 0x00 })?;
+        self.write_memory(OFFSET_ANGLE_SNAPPING, if enabled { 0x01 } else { 0x00 })
+            .await?;
         info!(enabled, "angle snapping set successfully");
         Ok(())
     }
 
     /// Set ripple control state.
     #[instrument(skip(self))]
-    pub fn set_ripple_control(&mut self, enabled: bool) -> Result<()> {
+    pub async fn set_ripple_control(&self, enabled: bool) -> Result<()> {
         info!(enabled, "setting ripple control");
-        self.write_memory(OFFSET_RIPPLE_CONTROL, if enabled { 0x01 } else { 0x00 })?;
+        self.write_memory(OFFSET_RIPPLE_CONTROL, if enabled { 0x01 } else { 0x00 })
+            .await?;
         info!(enabled, "ripple control set successfully");
         Ok(())
     }
 
     /// Set high speed mode state.
     #[instrument(skip(self))]
-    pub fn set_high_speed_mode(&mut self, enabled: bool) -> Result<()> {
+    pub async fn set_high_speed_mode(&self, enabled: bool) -> Result<()> {
         info!(enabled, "setting high speed mode");
-        self.write_memory(OFFSET_HIGH_SPEED_MODE, if enabled { 0x01 } else { 0x00 })?;
+        self.write_memory(OFFSET_HIGH_SPEED_MODE, if enabled { 0x01 } else { 0x00 })
+            .await?;
         info!(enabled, "high speed mode set successfully");
         Ok(())
     }
@@ -1103,14 +1140,14 @@ impl Mouse {
     ///
     /// This uses a special command (0x16) instead of memory write.
     #[instrument(skip(self))]
-    pub fn set_long_distance_mode(&mut self, enabled: bool) -> Result<()> {
+    pub async fn set_long_distance_mode(&self, enabled: bool) -> Result<()> {
         info!(enabled, "setting long distance mode");
 
         // Send status command first (observed in all write sequences)
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         let cmd = build_set_long_range_cmd(enabled);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             error!(
@@ -1142,23 +1179,25 @@ impl Mouse {
 
     /// Apply a full configuration.
     #[instrument(skip_all)]
-    pub fn set_config(&mut self, config: &MouseConfig) -> Result<()> {
+    pub async fn set_config(&self, config: &MouseConfig) -> Result<()> {
         info!("applying full mouse configuration");
         debug!(?config, "configuration to apply");
 
-        self.set_polling_rate(config.polling_rate)?;
-        self.set_lift_off_distance(config.lift_off_distance)?;
-        self.set_sleep_timeout(config.sleep_timeout_seconds)?;
-        self.set_angle_snapping(config.angle_snapping)?;
-        self.set_ripple_control(config.ripple_control)?;
-        self.set_high_speed_mode(config.high_speed_mode)?;
-        self.set_long_distance_mode(config.long_distance_mode)?;
-        self.set_debounce_time(config.debounce_time)?;
-        self.set_motion_sync(config.motion_sync)?;
-        self.set_moving_off_light_time(config.moving_off_light_time)?;
-        self.set_performance_time(config.performance_time)?;
-        self.set_sensor_mode(config.sensor_mode)?;
-        self.set_sensor_20k_mode(config.sensor_20k)?;
+        self.set_polling_rate(config.polling_rate).await?;
+        self.set_lift_off_distance(config.lift_off_distance).await?;
+        self.set_sleep_timeout(config.sleep_timeout_seconds).await?;
+        self.set_angle_snapping(config.angle_snapping).await?;
+        self.set_ripple_control(config.ripple_control).await?;
+        self.set_high_speed_mode(config.high_speed_mode).await?;
+        self.set_long_distance_mode(config.long_distance_mode)
+            .await?;
+        self.set_debounce_time(config.debounce_time).await?;
+        self.set_motion_sync(config.motion_sync).await?;
+        self.set_moving_off_light_time(config.moving_off_light_time)
+            .await?;
+        self.set_performance_time(config.performance_time).await?;
+        self.set_sensor_mode(config.sensor_mode).await?;
+        self.set_sensor_20k_mode(config.sensor_20k).await?;
 
         info!("mouse configuration applied successfully");
         Ok(())
@@ -1166,31 +1205,31 @@ impl Mouse {
 
     /// Set the DPI count (number of active DPI stages, 1-8).
     #[instrument(skip(self))]
-    pub fn set_dpi_count(&mut self, count: u8) -> Result<()> {
+    pub async fn set_dpi_count(&self, count: u8) -> Result<()> {
         if count == 0 || count > 8 {
             return Err(MouseError::InvalidDpiStage(count));
         }
         info!(count, "setting DPI count");
-        self.write_memory(OFFSET_MAX_DPI, count)?;
+        self.write_memory(OFFSET_MAX_DPI, count).await?;
         info!(count, "DPI count set successfully");
         Ok(())
     }
 
     /// Set the current DPI index (0-7).
     #[instrument(skip(self))]
-    pub fn set_current_dpi_index(&mut self, index: u8) -> Result<()> {
+    pub async fn set_current_dpi_index(&self, index: u8) -> Result<()> {
         if index >= 8 {
             return Err(MouseError::InvalidDpiStage(index));
         }
         info!(index, "setting current DPI index");
-        self.write_memory(OFFSET_CURRENT_DPI, index)?;
+        self.write_memory(OFFSET_CURRENT_DPI, index).await?;
         info!(index, "current DPI index set successfully");
         Ok(())
     }
 
     /// Set a specific DPI stage value.
     #[instrument(skip(self))]
-    pub fn set_dpi_value(&mut self, stage: u8, dpi: u16) -> Result<()> {
+    pub async fn set_dpi_value(&self, stage: u8, dpi: u16) -> Result<()> {
         if stage >= 8 {
             return Err(MouseError::InvalidDpiStage(stage));
         }
@@ -1203,11 +1242,11 @@ impl Mouse {
         let encoded = encode_dpi(dpi);
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         // Write the 4-byte DPI data
         let cmd = build_flash_write(address, &encoded);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             return Err(MouseError::InsufficientData {
@@ -1229,7 +1268,7 @@ impl Mouse {
 
     /// Set a specific DPI stage color.
     #[instrument(skip(self))]
-    pub fn set_dpi_color(&mut self, stage: u8, color: [u8; 3]) -> Result<()> {
+    pub async fn set_dpi_color(&self, stage: u8, color: [u8; 3]) -> Result<()> {
         if stage >= 8 {
             return Err(MouseError::InvalidDpiStage(stage));
         }
@@ -1239,11 +1278,11 @@ impl Mouse {
         let data = [color[0], color[1], color[2], 0x00];
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         // Write the 4-byte color data
         let cmd = build_flash_write(address, &data);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             return Err(MouseError::InsufficientData {
@@ -1265,50 +1304,52 @@ impl Mouse {
 
     /// Set debounce time in milliseconds (0-30).
     #[instrument(skip(self))]
-    pub fn set_debounce_time(&mut self, ms: u8) -> Result<()> {
+    pub async fn set_debounce_time(&self, ms: u8) -> Result<()> {
         if ms > 30 {
             return Err(MouseError::InvalidDebounceTime(ms));
         }
         info!(ms, "setting debounce time");
-        self.write_memory(OFFSET_DEBOUNCE_TIME, ms)?;
+        self.write_memory(OFFSET_DEBOUNCE_TIME, ms).await?;
         info!(ms, "debounce time set successfully");
         Ok(())
     }
 
     /// Set motion sync state.
     #[instrument(skip(self))]
-    pub fn set_motion_sync(&mut self, enabled: bool) -> Result<()> {
+    pub async fn set_motion_sync(&self, enabled: bool) -> Result<()> {
         info!(enabled, "setting motion sync");
-        self.write_memory(OFFSET_MOTION_SYNC, if enabled { 0x01 } else { 0x00 })?;
+        self.write_memory(OFFSET_MOTION_SYNC, if enabled { 0x01 } else { 0x00 })
+            .await?;
         info!(enabled, "motion sync set successfully");
         Ok(())
     }
 
     /// Set 20K sensor mode state.
     #[instrument(skip(self))]
-    pub fn set_sensor_20k_mode(&mut self, enabled: bool) -> Result<()> {
+    pub async fn set_sensor_20k_mode(&self, enabled: bool) -> Result<()> {
         info!(enabled, "setting 20K sensor mode");
-        self.write_memory(OFFSET_SENSOR_20K, if enabled { 0x01 } else { 0x00 })?;
+        self.write_memory(OFFSET_SENSOR_20K, if enabled { 0x01 } else { 0x00 })
+            .await?;
         info!(enabled, "20K sensor mode set successfully");
         Ok(())
     }
 
     /// Set sensor mode (low power vs high performance).
     #[instrument(skip(self))]
-    pub fn set_sensor_mode(&mut self, mode: SensorMode) -> Result<()> {
+    pub async fn set_sensor_mode(&self, mode: SensorMode) -> Result<()> {
         info!(?mode, "setting sensor mode");
-        self.write_memory(OFFSET_SENSOR_MODE, mode as u8)?;
+        self.write_memory(OFFSET_SENSOR_MODE, mode as u8).await?;
         info!(?mode, "sensor mode set successfully");
         Ok(())
     }
 
     /// Set light settings.
     #[instrument(skip(self))]
-    pub fn set_light_settings(&mut self, settings: &LightSettings) -> Result<()> {
+    pub async fn set_light_settings(&self, settings: &LightSettings) -> Result<()> {
         info!(?settings, "setting light settings");
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         // Write light mode, color, speed, brightness (7 bytes at OFFSET_LIGHT_SETTINGS)
         let data = [
@@ -1322,7 +1363,7 @@ impl Mouse {
         ];
 
         let cmd = build_flash_write(OFFSET_LIGHT_SETTINGS, &data);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             return Err(MouseError::InsufficientData {
@@ -1342,7 +1383,8 @@ impl Mouse {
         self.write_memory(
             OFFSET_LIGHT_STATE,
             if settings.enabled { 0x01 } else { 0x00 },
-        )?;
+        )
+        .await?;
 
         info!("light settings set successfully");
         Ok(())
@@ -1350,19 +1392,23 @@ impl Mouse {
 
     /// Set DPI effect settings.
     #[instrument(skip(self))]
-    pub fn set_dpi_effect_settings(&mut self, settings: &DpiEffectSettings) -> Result<()> {
+    pub async fn set_dpi_effect_settings(&self, settings: &DpiEffectSettings) -> Result<()> {
         info!(?settings, "setting DPI effect settings");
 
-        self.write_memory(OFFSET_DPI_EFFECT_MODE, settings.mode as u8)?;
+        self.write_memory(OFFSET_DPI_EFFECT_MODE, settings.mode as u8)
+            .await?;
         self.write_memory(
             OFFSET_DPI_EFFECT_BRIGHTNESS,
             encode_brightness(settings.brightness),
-        )?;
-        self.write_memory(OFFSET_DPI_EFFECT_SPEED, settings.speed.clamp(1, 10))?;
+        )
+        .await?;
+        self.write_memory(OFFSET_DPI_EFFECT_SPEED, settings.speed.clamp(1, 10))
+            .await?;
         self.write_memory(
             OFFSET_DPI_EFFECT_STATE,
             if settings.enabled { 0x01 } else { 0x00 },
-        )?;
+        )
+        .await?;
 
         info!("DPI effect settings set successfully");
         Ok(())
@@ -1370,7 +1416,7 @@ impl Mouse {
 
     /// Set a specific key function (0-7).
     #[instrument(skip(self))]
-    pub fn set_key_function(&mut self, key_index: u8, function: &KeyFunction) -> Result<()> {
+    pub async fn set_key_function(&self, key_index: u8, function: &KeyFunction) -> Result<()> {
         if key_index >= KEY_FUNCTION_COUNT as u8 {
             return Err(MouseError::InvalidDpiStage(key_index));
         }
@@ -1380,11 +1426,11 @@ impl Mouse {
         let encoded = function.encode();
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         // Write the 4-byte key function data
         let cmd = build_flash_write(address, &encoded);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             return Err(MouseError::InsufficientData {
@@ -1406,25 +1452,26 @@ impl Mouse {
 
     /// Set moving off light time.
     #[instrument(skip(self))]
-    pub fn set_moving_off_light_time(&mut self, time: u8) -> Result<()> {
+    pub async fn set_moving_off_light_time(&self, time: u8) -> Result<()> {
         info!(time, "setting moving off light time");
-        self.write_memory(OFFSET_MOVING_OFF_LIGHT, time)?;
+        self.write_memory(OFFSET_MOVING_OFF_LIGHT, time).await?;
         info!(time, "moving off light time set successfully");
         Ok(())
     }
 
     /// Set performance/sleep time value.
     #[instrument(skip(self))]
-    pub fn set_performance_time(&mut self, time: SleepTime) -> Result<()> {
+    pub async fn set_performance_time(&self, time: SleepTime) -> Result<()> {
         info!(?time, "setting performance time");
-        self.write_memory(OFFSET_PERFORMANCE_TIME, time.to_byte())?;
+        self.write_memory(OFFSET_PERFORMANCE_TIME, time.to_byte())
+            .await?;
         info!(?time, "performance time set successfully");
         Ok(())
     }
 
     /// Set a shortcut key definition (0-7).
     #[instrument(skip(self))]
-    pub fn set_shortcut_key(&mut self, slot: u8, shortcut: &ShortcutKey) -> Result<()> {
+    pub async fn set_shortcut_key(&self, slot: u8, shortcut: &ShortcutKey) -> Result<()> {
         if slot >= SHORTCUT_KEY_COUNT as u8 {
             return Err(MouseError::InvalidDpiStage(slot));
         }
@@ -1434,20 +1481,20 @@ impl Mouse {
         let encoded = shortcut.encode();
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         // Write in chunks of 10 bytes
         let cmd1 = build_flash_write(address, &encoded[0..10]);
-        self.send_command(&cmd1)?;
+        self.send_command(&cmd1).await?;
 
         let cmd2 = build_flash_write(address + 10, &encoded[10..20]);
-        self.send_command(&cmd2)?;
+        self.send_command(&cmd2).await?;
 
         let cmd3 = build_flash_write(address + 20, &encoded[20..30]);
-        self.send_command(&cmd3)?;
+        self.send_command(&cmd3).await?;
 
         let cmd4 = build_flash_write(address + 30, &encoded[30..32]);
-        self.send_command(&cmd4)?;
+        self.send_command(&cmd4).await?;
 
         info!(slot, "shortcut key set successfully");
         Ok(())
@@ -1455,7 +1502,7 @@ impl Mouse {
 
     /// Set a macro definition (0-7).
     #[instrument(skip(self))]
-    pub fn set_macro(&mut self, slot: u8, macro_def: &Macro) -> Result<()> {
+    pub async fn set_macro(&self, slot: u8, macro_def: &Macro) -> Result<()> {
         if slot >= MACRO_COUNT as u8 {
             return Err(MouseError::InvalidDpiStage(slot));
         }
@@ -1467,7 +1514,7 @@ impl Mouse {
         let encoded = macro_def.encode();
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         // Write in chunks of 10 bytes (max per flash write command)
         // Macro slot is 384 bytes, so we need 39 writes (384 / 10 = 38.4)
@@ -1478,7 +1525,7 @@ impl Mouse {
             let chunk = &encoded[offset as usize..offset as usize + chunk_len];
 
             let cmd = build_flash_write(base_address + offset, chunk);
-            self.send_command(&cmd)?;
+            self.send_command(&cmd).await?;
 
             offset += chunk_len as u16;
         }
@@ -1489,17 +1536,17 @@ impl Mouse {
 
     /// Set the current profile (0-3).
     #[instrument(skip(self))]
-    pub fn set_current_profile(&mut self, profile_index: u8) -> Result<()> {
+    pub async fn set_current_profile(&self, profile_index: u8) -> Result<()> {
         if profile_index > 3 {
             return Err(MouseError::InvalidProfile(profile_index));
         }
         info!(profile_index, "setting current profile");
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         let cmd = build_set_current_config_cmd(profile_index);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             return Err(MouseError::InsufficientData {
@@ -1524,14 +1571,14 @@ impl Mouse {
     /// Warning: This will reset all settings to factory defaults.
     /// After calling this, wait up to 1200ms for the device to complete the reset.
     #[instrument(skip(self))]
-    pub fn factory_reset(&mut self) -> Result<()> {
+    pub async fn factory_reset(&self) -> Result<()> {
         info!("performing factory reset");
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         let cmd = build_clear_setting_cmd();
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             return Err(MouseError::InsufficientData {
@@ -1555,14 +1602,14 @@ impl Mouse {
     ///
     /// The dongle will enter pairing mode for 62 seconds.
     #[instrument(skip(self))]
-    pub fn enter_pairing_mode(&mut self) -> Result<()> {
+    pub async fn enter_pairing_mode(&self) -> Result<()> {
         info!("entering pairing mode");
 
         // Send status sync first
-        self.send_status_sync()?;
+        self.send_status_sync().await?;
 
         let cmd = build_dongle_enter_pair_cmd();
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             return Err(MouseError::InsufficientData {
@@ -1584,10 +1631,10 @@ impl Mouse {
 
     /// Get the current pairing status.
     #[instrument(skip(self))]
-    pub fn get_pair_state(&mut self) -> Result<(PairStatus, u8)> {
+    pub async fn get_pair_state(&self) -> Result<(PairStatus, u8)> {
         debug!("getting pairing state");
         let cmd = build_get_pair_state_cmd();
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 8 {
             return Err(MouseError::InsufficientData {
@@ -1612,11 +1659,11 @@ impl Mouse {
 
     /// Notify the device of driver connection status.
     #[instrument(skip(self))]
-    pub fn set_driver_status(&mut self, connected: bool) -> Result<()> {
+    pub async fn set_driver_status(&self, connected: bool) -> Result<()> {
         info!(connected, "setting driver status");
 
         let cmd = build_pc_driver_status_cmd(connected);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 2 {
             return Err(MouseError::InsufficientData {
@@ -1638,7 +1685,7 @@ impl Mouse {
 
     /// Perform device handshake and get device information.
     #[instrument(skip(self))]
-    pub fn handshake(&mut self) -> Result<DeviceInfo> {
+    pub async fn handshake(&self) -> Result<DeviceInfo> {
         debug!("performing handshake");
 
         // Generate random bytes for handshake token
@@ -1669,7 +1716,7 @@ impl Mouse {
         ];
 
         let cmd = build_handshake_cmd(&random_bytes);
-        let response = self.send_command(&cmd)?;
+        let response = self.send_command(&cmd).await?;
 
         if response.len() < 12 {
             return Err(MouseError::InsufficientData {

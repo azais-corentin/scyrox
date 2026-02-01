@@ -42,7 +42,7 @@ impl ScyroxService {
     ///
     /// Returns the service, a shutdown receiver, and a device event receiver to be processed
     /// by a background task.
-    pub fn new(
+    pub async fn new(
         config: DaemonConfig,
         dirs: ProjectDirs,
         device_event_rx: broadcast::Receiver<DeviceEvent>,
@@ -51,46 +51,47 @@ impl ScyroxService {
         tokio::sync::watch::Receiver<bool>,
         broadcast::Receiver<DeviceEvent>,
     )> {
-        // Try to open the mouse, but don't fail if not connected
-        let mouse = match Mouse::open() {
-            Ok(m) => {
-                info!("Mouse connected");
-                Some(m)
-            }
-            Err(e) => {
-                warn!("Mouse not connected: {}", e);
-                None
-            }
-        };
-
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         // Create client event broadcast channel
         let (client_event_tx, _) = broadcast::channel(32);
 
-        Ok((
-            Self {
-                mouse: Arc::new(Mutex::new(mouse)),
-                profiles: ProfileStore::new(&dirs),
-                config,
-                start_time: Instant::now(),
-                active_profile_id: Arc::new(Mutex::new(None)),
-                shutdown_tx,
-                client_event_tx,
-            },
-            shutdown_rx,
-            device_event_rx,
-        ))
+        let service = Self {
+            mouse: Arc::new(Mutex::new(None)),
+            profiles: ProfileStore::new(&dirs),
+            config,
+            start_time: Instant::now(),
+            active_profile_id: Arc::new(Mutex::new(None)),
+            shutdown_tx,
+            client_event_tx,
+        };
+
+        // Try to open the mouse, but don't fail if not connected
+        match Mouse::open().await {
+            Ok(m) => {
+                info!("Mouse connected");
+                // Subscribe to notifications and spawn forwarder
+                service.spawn_notification_forwarder(&m);
+                *service.mouse.lock().await = Some(m);
+            }
+            Err(e) => {
+                warn!("Mouse not connected: {}", e);
+            }
+        }
+
+        Ok((service, shutdown_rx, device_event_rx))
     }
 
     /// Ensure mouse is connected, attempting to reconnect if needed.
     async fn ensure_mouse(&self) -> Result<(), Status> {
         let mut guard = self.mouse.lock().await;
         if guard.is_none() {
-            match Mouse::open() {
+            match Mouse::open().await {
                 Ok(m) => {
                     info!("Mouse reconnected");
+                    // Subscribe to notifications and spawn forwarder
+                    self.spawn_notification_forwarder(&m);
                     *guard = Some(m);
                 }
                 Err(_) => {
@@ -101,6 +102,51 @@ impl ScyroxService {
             }
         }
         Ok(())
+    }
+
+    /// Spawn a task to forward mouse notifications to clients.
+    fn spawn_notification_forwarder(&self, mouse: &Mouse) {
+        let notification_rx = mouse.subscribe_notifications();
+        let client_event_tx = self.client_event_tx.clone();
+
+        tokio::spawn(async move {
+            let mut rx = notification_rx;
+            loop {
+                match rx.recv().await {
+                    Ok(notif) => match notif {
+                        scyrox::Notification::StatusChanged(flags) => {
+                            let _ = client_event_tx.send(Event {
+                                event: Some(event::Event::SettingsChanged(SettingsChanged {
+                                    dpi_changed: flags.dpi_changed(),
+                                    report_rate_changed: flags.report_rate_changed(),
+                                    profile_changed: flags.profile_changed(),
+                                    dpi_settings_changed: flags.dpi_settings_changed(),
+                                    light_settings_changed: flags.light_settings_changed(),
+                                    battery_changed: flags.battery_changed(),
+                                })),
+                            });
+                        }
+                        scyrox::Notification::Disconnected => {
+                            let _ = client_event_tx.send(Event {
+                                event: Some(event::Event::ConnectionChange(ConnectionChange {
+                                    connected: false,
+                                    mode: ConnectionMode::Unspecified as i32,
+                                })),
+                            });
+                            break;
+                        }
+                    },
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(skipped = n, "notification forwarder lagged, continuing");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        debug!("notification channel closed, forwarder exiting");
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     /// Invalidate the current mouse connection.
@@ -120,13 +166,17 @@ impl ScyroxService {
     /// the mouse connection should be dropped.
     fn mouse_error_to_status(e: scyrox::MouseError) -> (Status, bool) {
         let message = e.to_string();
-        let should_invalidate = matches!(e, MouseError::Disconnected);
+        let should_invalidate = matches!(
+            e,
+            MouseError::Disconnected | MouseError::ChannelClosed | MouseError::TaskPanic
+        );
 
         let status = match e {
             // Connection issues → unavailable
-            MouseError::NotFound { .. } | MouseError::Disconnected | MouseError::DeviceOffline => {
-                Status::unavailable(message)
-            }
+            MouseError::NotFound { .. }
+            | MouseError::Disconnected
+            | MouseError::DeviceOffline
+            | MouseError::ChannelClosed => Status::unavailable(message),
             // Validation errors → invalid_argument
             MouseError::InvalidPollingRate(_)
             | MouseError::InvalidLiftOffDistance(_)
@@ -141,7 +191,8 @@ impl ScyroxService {
             | MouseError::Timeout
             | MouseError::UnexpectedResponse { .. }
             | MouseError::InsufficientData { .. }
-            | MouseError::NotSupported => Status::internal(message),
+            | MouseError::NotSupported
+            | MouseError::TaskPanic => Status::internal(message),
         };
 
         (status, should_invalidate)
@@ -187,8 +238,11 @@ impl ScyroxService {
                         info!(?mode, "device connected");
 
                         // Try to open the mouse
-                        match Mouse::open() {
+                        match Mouse::open().await {
                             Ok(m) => {
+                                // Subscribe to notifications and spawn forwarder
+                                spawn_notification_forwarder_static(&m, client_event_tx.clone());
+
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
                                 info!("mouse connection established");
@@ -250,8 +304,11 @@ impl ScyroxService {
                         }
 
                         // Open new connection
-                        match Mouse::open() {
+                        match Mouse::open().await {
                             Ok(m) => {
+                                // Subscribe to notifications and spawn forwarder
+                                spawn_notification_forwarder_static(&m, client_event_tx.clone());
+
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
                                 info!(?to, "mouse reconnected in new mode");
@@ -291,6 +348,50 @@ impl ScyroxService {
     }
 }
 
+/// Spawn a task to forward mouse notifications to clients (static version for use in closures).
+fn spawn_notification_forwarder_static(mouse: &Mouse, client_event_tx: broadcast::Sender<Event>) {
+    let notification_rx = mouse.subscribe_notifications();
+
+    tokio::spawn(async move {
+        let mut rx = notification_rx;
+        loop {
+            match rx.recv().await {
+                Ok(notif) => match notif {
+                    scyrox::Notification::StatusChanged(flags) => {
+                        let _ = client_event_tx.send(Event {
+                            event: Some(event::Event::SettingsChanged(SettingsChanged {
+                                dpi_changed: flags.dpi_changed(),
+                                report_rate_changed: flags.report_rate_changed(),
+                                profile_changed: flags.profile_changed(),
+                                dpi_settings_changed: flags.dpi_settings_changed(),
+                                light_settings_changed: flags.light_settings_changed(),
+                                battery_changed: flags.battery_changed(),
+                            })),
+                        });
+                    }
+                    scyrox::Notification::Disconnected => {
+                        let _ = client_event_tx.send(Event {
+                            event: Some(event::Event::ConnectionChange(ConnectionChange {
+                                connected: false,
+                                mode: ConnectionMode::Unspecified as i32,
+                            })),
+                        });
+                        break;
+                    }
+                },
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(skipped = n, "notification forwarder lagged, continuing");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    debug!("notification channel closed, forwarder exiting");
+                    break;
+                }
+            }
+        }
+    });
+}
+
 /// Auto-apply the last active profile or default profile on reconnection.
 async fn auto_apply_profile(
     mouse: &Arc<Mutex<Option<Mouse>>>,
@@ -323,9 +424,9 @@ async fn auto_apply_profile(
         Ok(profile) => {
             match profile_config_to_mouse_config(&profile.config) {
                 Ok(mouse_config) => {
-                    let mut guard = mouse.lock().await;
-                    if let Some(m) = guard.as_mut() {
-                        match m.set_config(&mouse_config) {
+                    let guard = mouse.lock().await;
+                    if let Some(m) = guard.as_ref() {
+                        match m.set_config(&mouse_config).await {
                             Ok(()) => {
                                 info!(
                                     profile_id = profile_id,
@@ -395,10 +496,10 @@ impl Scyrox for ScyroxService {
     ) -> Result<Response<BatteryStatus>, Status> {
         self.ensure_mouse().await?;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        let battery = match mouse.get_battery() {
+        let battery = match mouse.get_battery().await {
             Ok(b) => b,
             Err(e) => {
                 drop(guard);
@@ -420,12 +521,16 @@ impl Scyrox for ScyroxService {
     ) -> Result<Response<FirmwareInfo>, Status> {
         self.ensure_mouse().await?;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        let firmware = mouse
-            .get_firmware_info()
-            .map_err(mouse_error_to_grpc_status)?;
+        let firmware = match mouse.get_firmware_info().await {
+            Ok(f) => f,
+            Err(e) => {
+                drop(guard);
+                return Err(self.handle_mouse_error(e).await);
+            }
+        };
 
         Ok(Response::new(FirmwareInfo {
             mouse_version: firmware.mouse_version,
@@ -441,10 +546,10 @@ impl Scyrox for ScyroxService {
     async fn get_config(&self, _request: Request<Empty>) -> Result<Response<MouseConfig>, Status> {
         self.ensure_mouse().await?;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        let config = match mouse.get_config() {
+        let config = match mouse.get_config().await {
             Ok(c) => c,
             Err(e) => {
                 drop(guard);
@@ -462,10 +567,10 @@ impl Scyrox for ScyroxService {
         let proto_config = request.into_inner();
         let config = convert_proto_to_config(&proto_config)?;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        if let Err(e) = mouse.set_config(&config) {
+        if let Err(e) = mouse.set_config(&config).await {
             drop(guard);
             return Err(self.handle_mouse_error(e).await);
         }
@@ -483,12 +588,13 @@ impl Scyrox for ScyroxService {
 
         let rate = convert_polling_rate(request.into_inner().rate())?;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        mouse
-            .set_polling_rate(rate)
-            .map_err(mouse_error_to_grpc_status)?;
+        if let Err(e) = mouse.set_polling_rate(rate).await {
+            drop(guard);
+            return Err(self.handle_mouse_error(e).await);
+        }
 
         info!(?rate, "Polling rate updated");
         Ok(Response::new(Empty {}))
@@ -503,12 +609,13 @@ impl Scyrox for ScyroxService {
 
         let lod = convert_lift_off_distance(request.into_inner().distance())?;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        mouse
-            .set_lift_off_distance(lod)
-            .map_err(mouse_error_to_grpc_status)?;
+        if let Err(e) = mouse.set_lift_off_distance(lod).await {
+            drop(guard);
+            return Err(self.handle_mouse_error(e).await);
+        }
 
         info!(?lod, "Lift-off distance updated");
         Ok(Response::new(Empty {}))
@@ -523,12 +630,13 @@ impl Scyrox for ScyroxService {
 
         let seconds = request.into_inner().seconds as u16;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        mouse
-            .set_sleep_timeout(seconds)
-            .map_err(mouse_error_to_grpc_status)?;
+        if let Err(e) = mouse.set_sleep_timeout(seconds).await {
+            drop(guard);
+            return Err(self.handle_mouse_error(e).await);
+        }
 
         info!(seconds, "Sleep timeout updated");
         Ok(Response::new(Empty {}))
@@ -543,12 +651,13 @@ impl Scyrox for ScyroxService {
 
         let enabled = request.into_inner().enabled;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        mouse
-            .set_angle_snapping(enabled)
-            .map_err(mouse_error_to_grpc_status)?;
+        if let Err(e) = mouse.set_angle_snapping(enabled).await {
+            drop(guard);
+            return Err(self.handle_mouse_error(e).await);
+        }
 
         info!(enabled, "Angle snapping updated");
         Ok(Response::new(Empty {}))
@@ -563,12 +672,13 @@ impl Scyrox for ScyroxService {
 
         let enabled = request.into_inner().enabled;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        mouse
-            .set_ripple_control(enabled)
-            .map_err(mouse_error_to_grpc_status)?;
+        if let Err(e) = mouse.set_ripple_control(enabled).await {
+            drop(guard);
+            return Err(self.handle_mouse_error(e).await);
+        }
 
         info!(enabled, "Ripple control updated");
         Ok(Response::new(Empty {}))
@@ -583,12 +693,13 @@ impl Scyrox for ScyroxService {
 
         let enabled = request.into_inner().enabled;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        mouse
-            .set_high_speed_mode(enabled)
-            .map_err(mouse_error_to_grpc_status)?;
+        if let Err(e) = mouse.set_high_speed_mode(enabled).await {
+            drop(guard);
+            return Err(self.handle_mouse_error(e).await);
+        }
 
         info!(enabled, "High speed mode updated");
         Ok(Response::new(Empty {}))
@@ -603,12 +714,13 @@ impl Scyrox for ScyroxService {
 
         let enabled = request.into_inner().enabled;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        mouse
-            .set_long_distance_mode(enabled)
-            .map_err(mouse_error_to_grpc_status)?;
+        if let Err(e) = mouse.set_long_distance_mode(enabled).await {
+            drop(guard);
+            return Err(self.handle_mouse_error(e).await);
+        }
 
         info!(enabled, "Long distance mode updated");
         Ok(Response::new(Empty {}))
@@ -735,15 +847,16 @@ impl Scyrox for ScyroxService {
 
         let config = profile_config_to_mouse_config(&profile.config)?;
 
-        let mut guard = self.mouse.lock().await;
-        let mouse = guard.as_mut().unwrap();
+        let guard = self.mouse.lock().await;
+        let mouse = guard.as_ref().unwrap();
 
-        if let Err(e) = mouse.set_config(&config) {
+        if let Err(e) = mouse.set_config(&config).await {
             drop(guard);
             return Err(self.handle_mouse_error(e).await);
         }
 
         // Track the active profile ID
+        drop(guard);
         {
             let mut active_profile = self.active_profile_id.lock().await;
             *active_profile = Some(id.clone());
@@ -841,11 +954,6 @@ impl Scyrox for ScyroxService {
 // =============================================================================
 // Conversion Helpers
 // =============================================================================
-
-/// Convert a MouseError to a gRPC Status for use with map_err.
-fn mouse_error_to_grpc_status(e: scyrox::MouseError) -> Status {
-    ScyroxService::mouse_error_to_status(e).0
-}
 
 fn convert_config_to_proto(config: &scyrox::MouseConfig) -> MouseConfig {
     MouseConfig {

@@ -173,7 +173,17 @@ message Event {
     ConnectionChange connection_change = 2;
     LowBatteryAlert  low_battery_alert = 3;
     ProfileApplied   profile_applied   = 4;
+    SettingsChanged  settings_changed  = 5;
   }
+}
+
+message SettingsChanged {
+  bool dpi_changed            = 1;
+  bool report_rate_changed    = 2;
+  bool profile_changed        = 3;
+  bool dpi_settings_changed   = 4;
+  bool light_settings_changed = 5;
+  bool battery_changed        = 6;
 }
 
 message BatteryUpdate {
