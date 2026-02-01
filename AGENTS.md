@@ -147,50 +147,7 @@ mod tests {
 
 ### gRPC/Protobuf
 
-Proto files are in `crates/scyrox-proto/proto/`. Build with `tonic-prost-build`:
-
-```rust
-// build.rs
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_prost_build::configure()
-        .build_server(true)
-        .build_client(true)
-        .compile_protos(&["./proto/scyrox.proto"], &["./proto"])?;
-    Ok(())
-}
-```
-
-## Project Structure
-
-```
-scyroxd/
-  Cargo.toml              # Workspace root
-  .cargo/config.toml      # Cargo configuration
-  crates/
-    scyrox/               # Core USB/HID library
-      src/
-        lib.rs            # Public API re-exports
-        error.rs          # Error types
-        mouse.rs          # Mouse struct and methods
-        protocol.rs       # USB protocol constants and packets
-        types.rs          # Data types and enums
-    scyrox-proto/         # Protobuf definitions
-      proto/scyrox.proto  # gRPC service definition
-      build.rs            # Proto compilation
-      src/lib.rs          # Re-exports generated code
-    scyroxd/              # Daemon binary
-      src/
-        main.rs           # Entry point, socket setup
-        server.rs         # gRPC service implementation
-        config.rs         # Daemon configuration
-        profiles.rs       # Profile management
-    scyroxctl/            # CLI binary
-      src/
-        main.rs           # Entry point
-        cli.rs            # Argument definitions
-        client.rs         # gRPC client wrapper
-        commands/         # Command implementations
-```
+Proto files are in `crates/scyrox-proto/proto/`. They build with `tonic-prost-build`.
 
 ## Key Dependencies
 
