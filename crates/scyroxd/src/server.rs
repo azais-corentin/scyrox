@@ -114,32 +114,42 @@ impl ScyroxService {
         }
     }
 
-    /// Convert a mouse error to a gRPC Status with user-friendly messages.
+    /// Convert a mouse error to a gRPC Status using the error's display message directly.
     ///
-    /// Returns `Some(Status)` if the error indicates disconnection and the
-    /// mouse connection should be invalidated.
-    fn mouse_error_to_status(e: scyrox::MouseError, operation: &str) -> (Status, bool) {
-        match e {
-            MouseError::Disconnected => (
-                Status::unavailable("Mouse disconnected. Please reconnect the device."),
-                true, // Should invalidate
-            ),
-            MouseError::DeviceOffline => (
-                Status::unavailable(
-                    "Mouse is sleeping or out of range. Move the mouse to wake it up.",
-                ),
-                false,
-            ),
-            other => (
-                Status::internal(format!("Failed to {}: {}", operation, other)),
-                false,
-            ),
-        }
+    /// Returns a tuple of (Status, should_invalidate) where should_invalidate indicates
+    /// the mouse connection should be dropped.
+    fn mouse_error_to_status(e: scyrox::MouseError) -> (Status, bool) {
+        let message = e.to_string();
+        let should_invalidate = matches!(e, MouseError::Disconnected);
+
+        let status = match e {
+            // Connection issues → unavailable
+            MouseError::NotFound { .. } | MouseError::Disconnected | MouseError::DeviceOffline => {
+                Status::unavailable(message)
+            }
+            // Validation errors → invalid_argument
+            MouseError::InvalidPollingRate(_)
+            | MouseError::InvalidLiftOffDistance(_)
+            | MouseError::InvalidSleepTimeout(_)
+            | MouseError::InvalidDpiStage(_)
+            | MouseError::InvalidDpiValue(_)
+            | MouseError::InvalidDebounceTime(_)
+            | MouseError::InvalidProfile(_) => Status::invalid_argument(message),
+            // Protocol/communication errors → internal
+            MouseError::Usb(_)
+            | MouseError::Transfer(_)
+            | MouseError::Timeout
+            | MouseError::UnexpectedResponse { .. }
+            | MouseError::InsufficientData { .. }
+            | MouseError::NotSupported => Status::internal(message),
+        };
+
+        (status, should_invalidate)
     }
 
     /// Handle a mouse error, invalidating the connection if needed.
-    async fn handle_mouse_error(&self, e: scyrox::MouseError, operation: &str) -> Status {
-        let (status, should_invalidate) = Self::mouse_error_to_status(e, operation);
+    async fn handle_mouse_error(&self, e: scyrox::MouseError) -> Status {
+        let (status, should_invalidate) = Self::mouse_error_to_status(e);
 
         if should_invalidate {
             self.invalidate_mouse().await;
@@ -392,7 +402,7 @@ impl Scyrox for ScyroxService {
             Ok(b) => b,
             Err(e) => {
                 drop(guard);
-                return Err(self.handle_mouse_error(e, "read battery").await);
+                return Err(self.handle_mouse_error(e).await);
             }
         };
 
@@ -415,7 +425,7 @@ impl Scyrox for ScyroxService {
 
         let firmware = mouse
             .get_firmware_info()
-            .map_err(|e| Status::internal(format!("Failed to read firmware: {}", e)))?;
+            .map_err(mouse_error_to_grpc_status)?;
 
         Ok(Response::new(FirmwareInfo {
             mouse_version: firmware.mouse_version,
@@ -438,7 +448,7 @@ impl Scyrox for ScyroxService {
             Ok(c) => c,
             Err(e) => {
                 drop(guard);
-                return Err(self.handle_mouse_error(e, "read config").await);
+                return Err(self.handle_mouse_error(e).await);
             }
         };
 
@@ -457,7 +467,7 @@ impl Scyrox for ScyroxService {
 
         if let Err(e) = mouse.set_config(&config) {
             drop(guard);
-            return Err(self.handle_mouse_error(e, "set config").await);
+            return Err(self.handle_mouse_error(e).await);
         }
 
         info!("Configuration updated");
@@ -478,7 +488,7 @@ impl Scyrox for ScyroxService {
 
         mouse
             .set_polling_rate(rate)
-            .map_err(|e| Status::internal(format!("Failed to set polling rate: {}", e)))?;
+            .map_err(mouse_error_to_grpc_status)?;
 
         info!(?rate, "Polling rate updated");
         Ok(Response::new(Empty {}))
@@ -498,7 +508,7 @@ impl Scyrox for ScyroxService {
 
         mouse
             .set_lift_off_distance(lod)
-            .map_err(|e| Status::internal(format!("Failed to set lift-off distance: {}", e)))?;
+            .map_err(mouse_error_to_grpc_status)?;
 
         info!(?lod, "Lift-off distance updated");
         Ok(Response::new(Empty {}))
@@ -518,7 +528,7 @@ impl Scyrox for ScyroxService {
 
         mouse
             .set_sleep_timeout(seconds)
-            .map_err(|e| Status::internal(format!("Failed to set sleep timeout: {}", e)))?;
+            .map_err(mouse_error_to_grpc_status)?;
 
         info!(seconds, "Sleep timeout updated");
         Ok(Response::new(Empty {}))
@@ -538,7 +548,7 @@ impl Scyrox for ScyroxService {
 
         mouse
             .set_angle_snapping(enabled)
-            .map_err(|e| Status::internal(format!("Failed to set angle snapping: {}", e)))?;
+            .map_err(mouse_error_to_grpc_status)?;
 
         info!(enabled, "Angle snapping updated");
         Ok(Response::new(Empty {}))
@@ -558,7 +568,7 @@ impl Scyrox for ScyroxService {
 
         mouse
             .set_ripple_control(enabled)
-            .map_err(|e| Status::internal(format!("Failed to set ripple control: {}", e)))?;
+            .map_err(mouse_error_to_grpc_status)?;
 
         info!(enabled, "Ripple control updated");
         Ok(Response::new(Empty {}))
@@ -578,7 +588,7 @@ impl Scyrox for ScyroxService {
 
         mouse
             .set_high_speed_mode(enabled)
-            .map_err(|e| Status::internal(format!("Failed to set high speed mode: {}", e)))?;
+            .map_err(mouse_error_to_grpc_status)?;
 
         info!(enabled, "High speed mode updated");
         Ok(Response::new(Empty {}))
@@ -598,7 +608,7 @@ impl Scyrox for ScyroxService {
 
         mouse
             .set_long_distance_mode(enabled)
-            .map_err(|e| Status::internal(format!("Failed to set long distance mode: {}", e)))?;
+            .map_err(mouse_error_to_grpc_status)?;
 
         info!(enabled, "Long distance mode updated");
         Ok(Response::new(Empty {}))
@@ -730,7 +740,7 @@ impl Scyrox for ScyroxService {
 
         if let Err(e) = mouse.set_config(&config) {
             drop(guard);
-            return Err(self.handle_mouse_error(e, "apply profile").await);
+            return Err(self.handle_mouse_error(e).await);
         }
 
         // Track the active profile ID
@@ -831,6 +841,11 @@ impl Scyrox for ScyroxService {
 // =============================================================================
 // Conversion Helpers
 // =============================================================================
+
+/// Convert a MouseError to a gRPC Status for use with map_err.
+fn mouse_error_to_grpc_status(e: scyrox::MouseError) -> Status {
+    ScyroxService::mouse_error_to_status(e).0
+}
 
 fn convert_config_to_proto(config: &scyrox::MouseConfig) -> MouseConfig {
     MouseConfig {

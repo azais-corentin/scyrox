@@ -6,7 +6,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum MouseError {
     /// Mouse device not found on USB bus.
-    #[error("Mouse not found (VID: 0x{vid:04x}, PIDs: {pids:?})")]
+    #[error("Mouse not found")]
     NotFound { vid: u16, pids: Vec<u16> },
 
     /// USB communication error.
@@ -62,7 +62,7 @@ pub enum MouseError {
     NotSupported,
 
     /// Device is offline (wireless mouse not connected to dongle).
-    #[error("Device offline")]
+    #[error("Mouse is sleeping or out of range")]
     DeviceOffline,
 
     /// Device was disconnected during communication.
