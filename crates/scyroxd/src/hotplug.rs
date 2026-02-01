@@ -129,10 +129,8 @@ impl DeviceState {
     }
 
     /// Initialize state from currently connected devices.
-    fn init_from_current_devices(&mut self) {
-        use nusb::MaybeFuture;
-
-        let devices = match nusb::list_devices().wait() {
+    async fn init_from_current_devices(&mut self) {
+        let devices = match nusb::list_devices().await {
             Ok(iter) => iter,
             Err(e) => {
                 warn!("failed to list devices during init: {}", e);
@@ -204,7 +202,7 @@ impl HotplugMonitor {
 
         // Initialize state from currently connected devices
         let mut state = DeviceState::default();
-        state.init_from_current_devices();
+        state.init_from_current_devices().await;
 
         info!(
             wired = state.wired_id.is_some(),
@@ -229,39 +227,6 @@ impl HotplugMonitor {
 
         warn!("hotplug watch stream ended unexpectedly");
         Ok(())
-    }
-
-    /// Get the currently active connection mode by scanning devices.
-    ///
-    /// This is useful for initial status checks without waiting for events.
-    pub fn current_mode() -> Option<ConnectionMode> {
-        use nusb::MaybeFuture;
-
-        let devices = nusb::list_devices().wait().ok()?;
-
-        let mut has_wired = false;
-        let mut has_wireless = false;
-
-        for info in devices {
-            if info.vendor_id() != VENDOR_ID {
-                continue;
-            }
-
-            match info.product_id() {
-                PID_WIRED => has_wired = true,
-                PID_WIRELESS_4K | PID_WIRELESS_STD => has_wireless = true,
-                _ => {}
-            }
-        }
-
-        // Wired takes priority
-        if has_wired {
-            Some(ConnectionMode::Wired)
-        } else if has_wireless {
-            Some(ConnectionMode::Wireless)
-        } else {
-            None
-        }
     }
 }
 
