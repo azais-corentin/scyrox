@@ -1083,6 +1083,9 @@ impl Mouse {
     #[instrument(skip(self))]
     pub async fn set_sleep_timeout(&self, seconds: u16) -> Result<()> {
         info!(seconds, "setting sleep timeout");
+        if seconds != 10 {
+            warn!("firmware bug: sleep timeout is always 10s regardless of configured value");
+        }
 
         if seconds > MAX_SLEEP_TIMEOUT_SECONDS {
             error!(
