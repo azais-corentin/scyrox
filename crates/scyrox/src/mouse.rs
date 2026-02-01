@@ -1080,8 +1080,10 @@ impl Mouse {
     ///
     /// Must be a multiple of 10. Maximum value is 2550 seconds.
     /// The value is written to both the primary and secondary memory locations.
+    ///
+    /// Returns the actual sleep timeout that was applied (rounded down to a multiple of 10).
     #[instrument(skip(self))]
-    pub async fn set_sleep_timeout(&self, seconds: u16) -> Result<()> {
+    pub async fn set_sleep_timeout(&self, seconds: u16) -> Result<u16> {
         info!(seconds, "setting sleep timeout");
         if seconds != 10 {
             warn!("firmware bug: sleep timeout is always 10s regardless of configured value");
@@ -1097,7 +1099,19 @@ impl Mouse {
         }
 
         let value = (seconds / 10) as u8;
-        trace!(raw_value = value, "calculated raw timeout value");
+        let actual_seconds = value as u16 * 10;
+        trace!(
+            raw_value = value,
+            actual_seconds, "calculated raw timeout value"
+        );
+
+        if actual_seconds != seconds {
+            warn!(
+                requested = seconds,
+                actual = actual_seconds,
+                "sleep timeout rounded down to multiple of 10"
+            );
+        }
 
         // Write to secondary location first (as observed in dumps)
         self.write_memory(OFFSET_SLEEP_TIMEOUT_SECONDARY, value)
@@ -1105,8 +1119,8 @@ impl Mouse {
         // Then write to primary location
         self.write_memory(OFFSET_SLEEP_TIMEOUT, value).await?;
 
-        info!(seconds, "sleep timeout set successfully");
-        Ok(())
+        info!(actual_seconds, "sleep timeout set successfully");
+        Ok(actual_seconds)
     }
 
     /// Set angle snapping state.

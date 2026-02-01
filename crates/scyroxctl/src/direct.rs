@@ -53,7 +53,7 @@ impl Backend for DirectBackend {
         Ok(mouse.set_lift_off_distance(lod).await?)
     }
 
-    async fn set_sleep_timeout(&self, seconds: u16) -> Result<()> {
+    async fn set_sleep_timeout(&self, seconds: u16) -> Result<u16> {
         let mouse = self.mouse.lock().await;
         Ok(mouse.set_sleep_timeout(seconds).await?)
     }

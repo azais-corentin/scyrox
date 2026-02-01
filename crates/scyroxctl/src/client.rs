@@ -123,14 +123,14 @@ impl Backend for DaemonClient {
         Ok(())
     }
 
-    async fn set_sleep_timeout(&self, seconds: u16) -> Result<()> {
+    async fn set_sleep_timeout(&self, seconds: u16) -> Result<u16> {
         let mut client = self.client.lock().await;
-        client
+        let response = client
             .set_sleep_timeout(SetSleepTimeoutRequest {
                 seconds: seconds as u32,
             })
             .await?;
-        Ok(())
+        Ok(response.into_inner().actual_seconds as u16)
     }
 
     async fn set_angle_snapping(&self, enabled: bool) -> Result<()> {

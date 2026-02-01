@@ -19,7 +19,7 @@ pub trait Backend: Send + Sync {
     // Configuration
     async fn set_polling_rate(&self, rate: PollingRate) -> Result<()>;
     async fn set_lift_off_distance(&self, lod: LiftOffDistance) -> Result<()>;
-    async fn set_sleep_timeout(&self, seconds: u16) -> Result<()>;
+    async fn set_sleep_timeout(&self, seconds: u16) -> Result<u16>;
     async fn set_angle_snapping(&self, enabled: bool) -> Result<()>;
     async fn set_ripple_control(&self, enabled: bool) -> Result<()>;
     async fn set_high_speed_mode(&self, enabled: bool) -> Result<()>;

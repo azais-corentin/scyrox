@@ -49,11 +49,11 @@ async fn set_lod(backend: &dyn Backend, distance: LodArg) -> Result<()> {
 }
 
 async fn set_sleep_timeout(backend: &dyn Backend, seconds: u16) -> Result<()> {
-    backend.set_sleep_timeout(seconds).await?;
-    if seconds == 0 {
+    let actual = backend.set_sleep_timeout(seconds).await?;
+    if actual == 0 {
         println!("Sleep timeout disabled");
     } else {
-        println!("Sleep timeout set to {} seconds", seconds);
+        println!("Sleep timeout set to {} seconds", actual);
     }
     Ok(())
 }

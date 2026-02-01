@@ -625,7 +625,7 @@ impl Scyrox for ScyroxService {
     async fn set_sleep_timeout(
         &self,
         request: Request<SetSleepTimeoutRequest>,
-    ) -> Result<Response<Empty>, Status> {
+    ) -> Result<Response<SetSleepTimeoutResponse>, Status> {
         self.ensure_mouse().await?;
 
         let seconds = request.into_inner().seconds as u16;
@@ -633,13 +633,18 @@ impl Scyrox for ScyroxService {
         let guard = self.mouse.lock().await;
         let mouse = guard.as_ref().unwrap();
 
-        if let Err(e) = mouse.set_sleep_timeout(seconds).await {
-            drop(guard);
-            return Err(self.handle_mouse_error(e).await);
-        }
+        let actual_seconds = match mouse.set_sleep_timeout(seconds).await {
+            Ok(actual) => actual,
+            Err(e) => {
+                drop(guard);
+                return Err(self.handle_mouse_error(e).await);
+            }
+        };
 
-        info!(seconds, "Sleep timeout updated");
-        Ok(Response::new(Empty {}))
+        info!(actual_seconds, "Sleep timeout updated");
+        Ok(Response::new(SetSleepTimeoutResponse {
+            actual_seconds: actual_seconds as u32,
+        }))
     }
 
     #[instrument(skip(self, request))]

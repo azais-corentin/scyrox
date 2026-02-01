@@ -17,13 +17,13 @@ service Scyrox {
   rpc SetConfig (MouseConfig) returns (Empty      );
   
   // Individual settings
-  rpc SetPollingRate      (SetPollingRateRequest    ) returns (Empty);
-  rpc SetLiftOffDistance  (SetLiftOffDistanceRequest) returns (Empty);
-  rpc SetSleepTimeout     (SetSleepTimeoutRequest   ) returns (Empty);
-  rpc SetAngleSnapping    (SetBoolRequest           ) returns (Empty);
-  rpc SetRippleControl    (SetBoolRequest           ) returns (Empty);
-  rpc SetHighSpeedMode    (SetBoolRequest           ) returns (Empty);
-  rpc SetLongDistanceMode (SetBoolRequest           ) returns (Empty);
+  rpc SetPollingRate      (SetPollingRateRequest    ) returns (Empty                  );
+  rpc SetLiftOffDistance  (SetLiftOffDistanceRequest) returns (Empty                  );
+  rpc SetSleepTimeout     (SetSleepTimeoutRequest   ) returns (SetSleepTimeoutResponse);
+  rpc SetAngleSnapping    (SetBoolRequest           ) returns (Empty                  );
+  rpc SetRippleControl    (SetBoolRequest           ) returns (Empty                  );
+  rpc SetHighSpeedMode    (SetBoolRequest           ) returns (Empty                  );
+  rpc SetLongDistanceMode (SetBoolRequest           ) returns (Empty                  );
   
   // Profiles
   rpc ListProfiles      (Empty                   ) returns (ProfileList);
@@ -116,6 +116,10 @@ message SetLiftOffDistanceRequest {
 
 message SetSleepTimeoutRequest {
   uint32 seconds = 1;
+}
+
+message SetSleepTimeoutResponse {
+  uint32 actual_seconds = 1;
 }
 
 message SetBoolRequest {
