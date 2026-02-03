@@ -49,6 +49,34 @@ pub struct Mouse {
     task_handle: tokio::task::JoinHandle<()>,
 }
 
+/// Macro to implement getter and setter for boolean settings stored in memory.
+///
+/// This macro generates a pair of async methods for getting and setting a boolean
+/// setting that is stored as a single byte in mouse memory (0x01 = enabled, 0x00 = disabled).
+macro_rules! impl_bool_setting {
+    ($get:ident, $set:ident, $offset:ident, $name:literal) => {
+        #[doc = concat!("Get ", $name, " state.")]
+        #[instrument(skip(self))]
+        pub async fn $get(&self) -> Result<bool> {
+            debug!("getting {}", $name);
+            let byte = self.read_memory_byte($offset).await?;
+            let enabled = byte == 0x01;
+            debug!(enabled = enabled, "{} state retrieved", $name);
+            Ok(enabled)
+        }
+
+        #[doc = concat!("Set ", $name, " state.")]
+        #[instrument(skip(self))]
+        pub async fn $set(&self, enabled: bool) -> Result<()> {
+            info!(enabled = enabled, "setting {}", $name);
+            self.write_memory($offset, if enabled { 0x01 } else { 0x00 })
+                .await?;
+            info!(enabled = enabled, "{} set successfully", $name);
+            Ok(())
+        }
+    };
+}
+
 impl Mouse {
     /// Open a connection to the mouse.
     ///
@@ -412,7 +440,7 @@ impl Mouse {
     pub async fn get_polling_rate(&self) -> Result<PollingRate> {
         debug!("getting polling rate");
         let byte = self.read_memory_byte(OFFSET_POLLING_RATE).await?;
-        match PollingRate::from_byte(byte) {
+        match PollingRate::try_from(byte).ok() {
             Some(rate) => {
                 debug!(?rate, "polling rate retrieved");
                 Ok(rate)
@@ -429,7 +457,7 @@ impl Mouse {
     pub async fn get_lift_off_distance(&self) -> Result<LiftOffDistance> {
         debug!("getting lift-off distance");
         let byte = self.read_memory_byte(OFFSET_LIFT_OFF_DISTANCE).await?;
-        match LiftOffDistance::from_byte(byte) {
+        match LiftOffDistance::try_from(byte).ok() {
             Some(lod) => {
                 debug!(?lod, "lift-off distance retrieved");
                 Ok(lod)
@@ -451,35 +479,26 @@ impl Mouse {
         Ok(seconds)
     }
 
-    /// Get angle snapping state.
-    #[instrument(skip(self))]
-    pub async fn get_angle_snapping(&self) -> Result<bool> {
-        debug!("getting angle snapping state");
-        let byte = self.read_memory_byte(OFFSET_ANGLE_SNAPPING).await?;
-        let enabled = byte == 0x01;
-        debug!(enabled, "angle snapping state retrieved");
-        Ok(enabled)
-    }
+    impl_bool_setting!(
+        get_angle_snapping,
+        set_angle_snapping,
+        OFFSET_ANGLE_SNAPPING,
+        "angle snapping"
+    );
 
-    /// Get ripple control state.
-    #[instrument(skip(self))]
-    pub async fn get_ripple_control(&self) -> Result<bool> {
-        debug!("getting ripple control state");
-        let byte = self.read_memory_byte(OFFSET_RIPPLE_CONTROL).await?;
-        let enabled = byte == 0x01;
-        debug!(enabled, "ripple control state retrieved");
-        Ok(enabled)
-    }
+    impl_bool_setting!(
+        get_ripple_control,
+        set_ripple_control,
+        OFFSET_RIPPLE_CONTROL,
+        "ripple control"
+    );
 
-    /// Get high speed mode state.
-    #[instrument(skip(self))]
-    pub async fn get_high_speed_mode(&self) -> Result<bool> {
-        debug!("getting high speed mode state");
-        let byte = self.read_memory_byte(OFFSET_HIGH_SPEED_MODE).await?;
-        let enabled = byte == 0x01;
-        debug!(enabled, "high speed mode state retrieved");
-        Ok(enabled)
-    }
+    impl_bool_setting!(
+        get_high_speed_mode,
+        set_high_speed_mode,
+        OFFSET_HIGH_SPEED_MODE,
+        "high speed mode"
+    );
 
     /// Get long distance mode state.
     ///
@@ -738,32 +757,26 @@ impl Mouse {
         Ok(byte)
     }
 
-    /// Get motion sync state.
-    #[instrument(skip(self))]
-    pub async fn get_motion_sync(&self) -> Result<bool> {
-        debug!("getting motion sync state");
-        let byte = self.read_memory_byte(OFFSET_MOTION_SYNC).await?;
-        let enabled = byte == 0x01;
-        debug!(enabled, "motion sync state retrieved");
-        Ok(enabled)
-    }
+    impl_bool_setting!(
+        get_motion_sync,
+        set_motion_sync,
+        OFFSET_MOTION_SYNC,
+        "motion sync"
+    );
 
-    /// Get 20K sensor mode state.
-    #[instrument(skip(self))]
-    pub async fn get_sensor_20k_mode(&self) -> Result<bool> {
-        debug!("getting 20K sensor mode state");
-        let byte = self.read_memory_byte(OFFSET_SENSOR_20K).await?;
-        let enabled = byte == 0x01;
-        debug!(enabled, "20K sensor mode state retrieved");
-        Ok(enabled)
-    }
+    impl_bool_setting!(
+        get_sensor_20k_mode,
+        set_sensor_20k_mode,
+        OFFSET_SENSOR_20K,
+        "20K sensor mode"
+    );
 
     /// Get sensor mode (low power vs high performance).
     #[instrument(skip(self))]
     pub async fn get_sensor_mode(&self) -> Result<SensorMode> {
         debug!("getting sensor mode");
         let byte = self.read_memory_byte(OFFSET_SENSOR_MODE).await?;
-        match SensorMode::from_byte(byte) {
+        match SensorMode::try_from(byte).ok() {
             Some(mode) => {
                 debug!(?mode, "sensor mode retrieved");
                 Ok(mode)
@@ -783,7 +796,7 @@ impl Mouse {
         let data = self.read_memory(OFFSET_LIGHT_SETTINGS, 7).await?;
         let state_byte = self.read_memory_byte(OFFSET_LIGHT_STATE).await?;
 
-        let mode = LightMode::from_byte(data[0]).unwrap_or(LightMode::Off);
+        let mode = LightMode::try_from(data[0]).ok().unwrap_or(LightMode::Off);
         let color = [data[1], data[2], data[3]];
         let speed = data[4];
         let brightness = data[5];
@@ -810,7 +823,9 @@ impl Mouse {
         let speed_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_SPEED).await?;
         let state_byte = self.read_memory_byte(OFFSET_DPI_EFFECT_STATE).await?;
 
-        let mode = DpiEffectMode::from_byte(mode_byte).unwrap_or(DpiEffectMode::Off);
+        let mode = DpiEffectMode::try_from(mode_byte)
+            .ok()
+            .unwrap_or(DpiEffectMode::Off);
         let brightness = decode_brightness(brightness_byte);
         let speed = speed_byte.clamp(1, 10);
         let enabled = state_byte == 0x01;
@@ -869,7 +884,7 @@ impl Mouse {
     pub async fn get_performance_time(&self) -> Result<SleepTime> {
         debug!("getting performance time");
         let byte = self.read_memory_byte(OFFSET_PERFORMANCE_TIME).await?;
-        match SleepTime::from_byte(byte) {
+        match SleepTime::try_from(byte).ok() {
             Some(time) => {
                 debug!(?time, "performance time retrieved");
                 Ok(time)
@@ -1060,8 +1075,7 @@ impl Mouse {
     #[instrument(skip(self))]
     pub async fn set_polling_rate(&self, rate: PollingRate) -> Result<()> {
         info!(?rate, "setting polling rate");
-        self.write_memory(OFFSET_POLLING_RATE, rate.to_byte())
-            .await?;
+        self.write_memory(OFFSET_POLLING_RATE, rate.into()).await?;
         info!(?rate, "polling rate set successfully");
         Ok(())
     }
@@ -1070,7 +1084,7 @@ impl Mouse {
     #[instrument(skip(self))]
     pub async fn set_lift_off_distance(&self, lod: LiftOffDistance) -> Result<()> {
         info!(?lod, "setting lift-off distance");
-        self.write_memory(OFFSET_LIFT_OFF_DISTANCE, lod.to_byte())
+        self.write_memory(OFFSET_LIFT_OFF_DISTANCE, lod.into())
             .await?;
         info!(?lod, "lift-off distance set successfully");
         Ok(())
@@ -1121,36 +1135,6 @@ impl Mouse {
 
         info!(actual_seconds, "sleep timeout set successfully");
         Ok(actual_seconds)
-    }
-
-    /// Set angle snapping state.
-    #[instrument(skip(self))]
-    pub async fn set_angle_snapping(&self, enabled: bool) -> Result<()> {
-        info!(enabled, "setting angle snapping");
-        self.write_memory(OFFSET_ANGLE_SNAPPING, if enabled { 0x01 } else { 0x00 })
-            .await?;
-        info!(enabled, "angle snapping set successfully");
-        Ok(())
-    }
-
-    /// Set ripple control state.
-    #[instrument(skip(self))]
-    pub async fn set_ripple_control(&self, enabled: bool) -> Result<()> {
-        info!(enabled, "setting ripple control");
-        self.write_memory(OFFSET_RIPPLE_CONTROL, if enabled { 0x01 } else { 0x00 })
-            .await?;
-        info!(enabled, "ripple control set successfully");
-        Ok(())
-    }
-
-    /// Set high speed mode state.
-    #[instrument(skip(self))]
-    pub async fn set_high_speed_mode(&self, enabled: bool) -> Result<()> {
-        info!(enabled, "setting high speed mode");
-        self.write_memory(OFFSET_HIGH_SPEED_MODE, if enabled { 0x01 } else { 0x00 })
-            .await?;
-        info!(enabled, "high speed mode set successfully");
-        Ok(())
     }
 
     /// Set long distance mode state.
@@ -1331,31 +1315,11 @@ impl Mouse {
         Ok(())
     }
 
-    /// Set motion sync state.
-    #[instrument(skip(self))]
-    pub async fn set_motion_sync(&self, enabled: bool) -> Result<()> {
-        info!(enabled, "setting motion sync");
-        self.write_memory(OFFSET_MOTION_SYNC, if enabled { 0x01 } else { 0x00 })
-            .await?;
-        info!(enabled, "motion sync set successfully");
-        Ok(())
-    }
-
-    /// Set 20K sensor mode state.
-    #[instrument(skip(self))]
-    pub async fn set_sensor_20k_mode(&self, enabled: bool) -> Result<()> {
-        info!(enabled, "setting 20K sensor mode");
-        self.write_memory(OFFSET_SENSOR_20K, if enabled { 0x01 } else { 0x00 })
-            .await?;
-        info!(enabled, "20K sensor mode set successfully");
-        Ok(())
-    }
-
     /// Set sensor mode (low power vs high performance).
     #[instrument(skip(self))]
     pub async fn set_sensor_mode(&self, mode: SensorMode) -> Result<()> {
         info!(?mode, "setting sensor mode");
-        self.write_memory(OFFSET_SENSOR_MODE, mode as u8).await?;
+        self.write_memory(OFFSET_SENSOR_MODE, mode.into()).await?;
         info!(?mode, "sensor mode set successfully");
         Ok(())
     }
@@ -1370,7 +1334,7 @@ impl Mouse {
 
         // Write light mode, color, speed, brightness (7 bytes at OFFSET_LIGHT_SETTINGS)
         let data = [
-            settings.mode as u8,
+            settings.mode.into(),
             settings.color[0],
             settings.color[1],
             settings.color[2],
@@ -1412,7 +1376,7 @@ impl Mouse {
     pub async fn set_dpi_effect_settings(&self, settings: &DpiEffectSettings) -> Result<()> {
         info!(?settings, "setting DPI effect settings");
 
-        self.write_memory(OFFSET_DPI_EFFECT_MODE, settings.mode as u8)
+        self.write_memory(OFFSET_DPI_EFFECT_MODE, settings.mode.into())
             .await?;
         self.write_memory(
             OFFSET_DPI_EFFECT_BRIGHTNESS,
@@ -1480,7 +1444,7 @@ impl Mouse {
     #[instrument(skip(self))]
     pub async fn set_performance_time(&self, time: SleepTime) -> Result<()> {
         info!(?time, "setting performance time");
-        self.write_memory(OFFSET_PERFORMANCE_TIME, time.to_byte())
+        self.write_memory(OFFSET_PERFORMANCE_TIME, time.into())
             .await?;
         info!(?time, "performance time set successfully");
         Ok(())
@@ -1667,7 +1631,9 @@ impl Mouse {
             });
         }
 
-        let status = PairStatus::from_byte(response[6]).unwrap_or(PairStatus::Idle);
+        let status = PairStatus::try_from(response[6])
+            .ok()
+            .unwrap_or(PairStatus::Idle);
         let time_remaining = response[7];
 
         debug!(?status, time_remaining, "pairing state retrieved");
@@ -1763,8 +1729,9 @@ impl Mouse {
         let cid = response[10];
         let mid = response[11];
         let conn_type_byte = response[12];
-        let connection_type =
-            ConnectionType::from_byte(conn_type_byte).unwrap_or(ConnectionType::WirelessStandard);
+        let connection_type = ConnectionType::try_from(conn_type_byte)
+            .ok()
+            .unwrap_or(ConnectionType::WirelessStandard);
 
         let info = DeviceInfo {
             cid,

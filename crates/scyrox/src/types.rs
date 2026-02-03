@@ -2,18 +2,21 @@
 
 use std::fmt;
 
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serde::Serialize;
+use strum::Display;
 
 /// Polling rate options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
+#[repr(u8)]
 pub enum PollingRate {
-    Hz125,
-    Hz250,
-    Hz500,
-    Hz1000,
-    Hz2000,
-    Hz4000,
-    Hz8000,
+    Hz125 = 0x08,
+    Hz250 = 0x04,
+    Hz500 = 0x02,
+    Hz1000 = 0x01,
+    Hz2000 = 0x10,
+    Hz4000 = 0x20,
+    Hz8000 = 0x40,
 }
 
 impl PollingRate {
@@ -28,33 +31,6 @@ impl PollingRate {
         PollingRate::Hz8000,
     ];
 
-    /// Convert to the wire byte value.
-    pub fn to_byte(self) -> u8 {
-        match self {
-            PollingRate::Hz125 => 0x08,
-            PollingRate::Hz250 => 0x04,
-            PollingRate::Hz500 => 0x02,
-            PollingRate::Hz1000 => 0x01,
-            PollingRate::Hz2000 => 0x10,
-            PollingRate::Hz4000 => 0x20,
-            PollingRate::Hz8000 => 0x40,
-        }
-    }
-
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0x08 => Some(PollingRate::Hz125),
-            0x04 => Some(PollingRate::Hz250),
-            0x02 => Some(PollingRate::Hz500),
-            0x01 => Some(PollingRate::Hz1000),
-            0x10 => Some(PollingRate::Hz2000),
-            0x20 => Some(PollingRate::Hz4000),
-            0x40 => Some(PollingRate::Hz8000),
-            _ => None,
-        }
-    }
-
     /// Get the polling rate in Hz.
     pub fn to_hz(self) -> u16 {
         match self {
@@ -65,6 +41,20 @@ impl PollingRate {
             PollingRate::Hz2000 => 2000,
             PollingRate::Hz4000 => 4000,
             PollingRate::Hz8000 => 8000,
+        }
+    }
+
+    /// Convert Hz value to PollingRate, returns None if invalid.
+    pub fn from_hz(hz: u16) -> Option<Self> {
+        match hz {
+            125 => Some(Self::Hz125),
+            250 => Some(Self::Hz250),
+            500 => Some(Self::Hz500),
+            1000 => Some(Self::Hz1000),
+            2000 => Some(Self::Hz2000),
+            4000 => Some(Self::Hz4000),
+            8000 => Some(Self::Hz8000),
+            _ => None,
         }
     }
 
@@ -108,14 +98,15 @@ impl Serialize for PollingRate {
 }
 
 /// Lift-off distance options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
+#[repr(u8)]
 pub enum LiftOffDistance {
     /// 0.7mm (Low)
-    Low,
+    Low = 0x03,
     /// 1.0mm (Medium)
-    Medium,
+    Medium = 0x01,
     /// 2.0mm (High)
-    High,
+    High = 0x02,
 }
 
 impl LiftOffDistance {
@@ -126,31 +117,22 @@ impl LiftOffDistance {
         LiftOffDistance::High,
     ];
 
-    /// Convert to the wire byte value.
-    pub fn to_byte(self) -> u8 {
-        match self {
-            LiftOffDistance::Low => 0x03,
-            LiftOffDistance::Medium => 0x01,
-            LiftOffDistance::High => 0x02,
-        }
-    }
-
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0x03 => Some(LiftOffDistance::Low),
-            0x01 => Some(LiftOffDistance::Medium),
-            0x02 => Some(LiftOffDistance::High),
-            _ => None,
-        }
-    }
-
     /// Get the distance in millimeters.
     pub fn to_mm(self) -> f32 {
         match self {
             LiftOffDistance::Low => 0.7,
             LiftOffDistance::Medium => 1.0,
             LiftOffDistance::High => 2.0,
+        }
+    }
+
+    /// Convert mm value to LiftOffDistance, returns None if invalid.
+    pub fn from_mm(mm: f32) -> Option<Self> {
+        match mm {
+            x if (x - 0.7).abs() < 0.01 => Some(Self::Low),
+            x if (x - 1.0).abs() < 0.01 => Some(Self::Medium),
+            x if (x - 2.0).abs() < 0.01 => Some(Self::High),
+            _ => None,
         }
     }
 
@@ -217,7 +199,7 @@ impl fmt::Display for ConnectionMode {
 ///
 /// This provides more detailed information about the connection type
 /// and maximum supported polling rate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum ConnectionType {
     /// Wireless standard (1000 Hz max)
@@ -235,19 +217,6 @@ pub enum ConnectionType {
 }
 
 impl ConnectionType {
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(ConnectionType::WirelessStandard),
-            1 => Some(ConnectionType::Wireless4K),
-            2 => Some(ConnectionType::WiredStandard),
-            3 => Some(ConnectionType::WiredHighSpeed),
-            4 => Some(ConnectionType::Wireless2K),
-            5 => Some(ConnectionType::Wireless8K),
-            _ => None,
-        }
-    }
-
     /// Get the maximum polling rate in Hz for this connection type.
     pub fn max_polling_rate_hz(self) -> u16 {
         match self {
@@ -314,6 +283,26 @@ pub struct MouseConfig {
     pub sensor_20k: bool,
 }
 
+impl Default for MouseConfig {
+    fn default() -> Self {
+        Self {
+            polling_rate: PollingRate::Hz1000,
+            lift_off_distance: LiftOffDistance::Low,
+            sleep_timeout_seconds: 300,
+            angle_snapping: false,
+            ripple_control: false,
+            high_speed_mode: false,
+            long_distance_mode: false,
+            debounce_time: 0,
+            motion_sync: false,
+            moving_off_light_time: 0,
+            performance_time: SleepTime::Min1,
+            sensor_mode: SensorMode::HighPerformance,
+            sensor_20k: false,
+        }
+    }
+}
+
 /// Battery status information.
 #[derive(Debug, Clone, Serialize)]
 pub struct BatteryStatus {
@@ -362,7 +351,7 @@ impl Default for DeviceInfo {
 }
 
 /// Pairing status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive, Display)]
 #[repr(u8)]
 pub enum PairStatus {
     /// Idle / Not pairing.
@@ -373,30 +362,6 @@ pub enum PairStatus {
     Failed = 2,
     /// Pairing successful.
     Success = 3,
-}
-
-impl PairStatus {
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(PairStatus::Idle),
-            1 => Some(PairStatus::Pairing),
-            2 => Some(PairStatus::Failed),
-            3 => Some(PairStatus::Success),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for PairStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PairStatus::Idle => write!(f, "Idle"),
-            PairStatus::Pairing => write!(f, "Pairing"),
-            PairStatus::Failed => write!(f, "Failed"),
-            PairStatus::Success => write!(f, "Success"),
-        }
-    }
 }
 
 /// DPI stage configuration.
@@ -418,7 +383,7 @@ impl Default for DpiStage {
 }
 
 /// Key function type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum KeyFunctionType {
     /// Key disabled.
@@ -439,23 +404,6 @@ pub enum KeyFunctionType {
     ReportRateSwitch = 7,
 }
 
-impl KeyFunctionType {
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(KeyFunctionType::Disabled),
-            1 => Some(KeyFunctionType::MouseButton),
-            2 => Some(KeyFunctionType::DpiSwitch),
-            3 => Some(KeyFunctionType::ScrollWheel),
-            4 => Some(KeyFunctionType::FireKey),
-            5 => Some(KeyFunctionType::ShortcutKey),
-            6 => Some(KeyFunctionType::Macro),
-            7 => Some(KeyFunctionType::ReportRateSwitch),
-            _ => None,
-        }
-    }
-}
-
 impl fmt::Display for KeyFunctionType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -472,7 +420,7 @@ impl fmt::Display for KeyFunctionType {
 }
 
 /// Mouse button codes (for KeyFunctionType::MouseButton).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u16)]
 pub enum MouseButton {
     /// Left click.
@@ -485,20 +433,6 @@ pub enum MouseButton {
     Back = 0x0800,
     /// Forward button.
     Forward = 0x1000,
-}
-
-impl MouseButton {
-    /// Parse from wire value.
-    pub fn from_u16(value: u16) -> Option<Self> {
-        match value {
-            0x0100 => Some(MouseButton::Left),
-            0x0200 => Some(MouseButton::Right),
-            0x0400 => Some(MouseButton::Middle),
-            0x0800 => Some(MouseButton::Back),
-            0x1000 => Some(MouseButton::Forward),
-            _ => None,
-        }
-    }
 }
 
 impl fmt::Display for MouseButton {
@@ -514,7 +448,7 @@ impl fmt::Display for MouseButton {
 }
 
 /// DPI switch mode codes (for KeyFunctionType::DpiSwitch).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u16)]
 pub enum DpiSwitchMode {
     /// Cycle through DPI stages.
@@ -523,18 +457,6 @@ pub enum DpiSwitchMode {
     Up = 0x0200,
     /// Decrease DPI stage.
     Down = 0x0300,
-}
-
-impl DpiSwitchMode {
-    /// Parse from wire value.
-    pub fn from_u16(value: u16) -> Option<Self> {
-        match value {
-            0x0100 => Some(DpiSwitchMode::Cycle),
-            0x0200 => Some(DpiSwitchMode::Up),
-            0x0300 => Some(DpiSwitchMode::Down),
-            _ => None,
-        }
-    }
 }
 
 impl fmt::Display for DpiSwitchMode {
@@ -548,24 +470,13 @@ impl fmt::Display for DpiSwitchMode {
 }
 
 /// Scroll wheel direction codes (for KeyFunctionType::ScrollWheel).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u16)]
 pub enum ScrollWheelDirection {
     /// Scroll left.
     Left = 0x0100,
     /// Scroll right.
     Right = 0x0200,
-}
-
-impl ScrollWheelDirection {
-    /// Parse from wire value.
-    pub fn from_u16(value: u16) -> Option<Self> {
-        match value {
-            0x0100 => Some(ScrollWheelDirection::Left),
-            0x0200 => Some(ScrollWheelDirection::Right),
-            _ => None,
-        }
-    }
 }
 
 impl fmt::Display for ScrollWheelDirection {
@@ -663,7 +574,7 @@ impl fmt::Display for MacroKeyConfig {
             f,
             "Macro {} ({})",
             self.slot,
-            MacroCycleMode::from_byte(self.cycle_count)
+            MacroCycleMode::from_byte(self.cycle_count) // Keep manual implementation
         )
     }
 }
@@ -765,7 +676,7 @@ impl KeyFunction {
 
     /// Decode from wire format (4 bytes).
     pub fn decode(bytes: &[u8; 4]) -> Option<Self> {
-        let function_type = KeyFunctionType::from_byte(bytes[0])?;
+        let function_type = KeyFunctionType::try_from(bytes[0]).ok()?;
         let parameter = ((bytes[1] as u16) << 8) | (bytes[2] as u16);
         Some(Self {
             function_type,
@@ -775,7 +686,7 @@ impl KeyFunction {
 }
 
 /// Light mode options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum LightMode {
     /// Light off.
@@ -792,22 +703,6 @@ pub enum LightMode {
     MixedColorBreathing = 5,
     /// Colorful constant.
     ColorfulConstant = 6,
-}
-
-impl LightMode {
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(LightMode::Off),
-            1 => Some(LightMode::ColorFlow),
-            2 => Some(LightMode::SingleColorBreathing),
-            3 => Some(LightMode::ConstantColor),
-            4 => Some(LightMode::Neon),
-            5 => Some(LightMode::MixedColorBreathing),
-            6 => Some(LightMode::ColorfulConstant),
-            _ => None,
-        }
-    }
 }
 
 impl fmt::Display for LightMode {
@@ -852,7 +747,7 @@ impl Default for LightSettings {
 }
 
 /// DPI effect mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive, Display)]
 #[repr(u8)]
 pub enum DpiEffectMode {
     /// Effect off.
@@ -861,28 +756,6 @@ pub enum DpiEffectMode {
     Constant = 1,
     /// Breathing effect.
     Breathing = 2,
-}
-
-impl DpiEffectMode {
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(DpiEffectMode::Off),
-            1 => Some(DpiEffectMode::Constant),
-            2 => Some(DpiEffectMode::Breathing),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for DpiEffectMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DpiEffectMode::Off => write!(f, "Off"),
-            DpiEffectMode::Constant => write!(f, "Constant"),
-            DpiEffectMode::Breathing => write!(f, "Breathing"),
-        }
-    }
 }
 
 /// DPI effect settings configuration.
@@ -910,7 +783,7 @@ impl Default for DpiEffectSettings {
 }
 
 /// Sensor mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TryFromPrimitive, IntoPrimitive)]
 #[serde(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum SensorMode {
@@ -918,17 +791,6 @@ pub enum SensorMode {
     LowPower = 0,
     /// High performance mode.
     HighPerformance = 1,
-}
-
-impl SensorMode {
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(SensorMode::LowPower),
-            1 => Some(SensorMode::HighPerformance),
-            _ => None,
-        }
-    }
 }
 
 impl fmt::Display for SensorMode {
@@ -941,48 +803,24 @@ impl fmt::Display for SensorMode {
 }
 
 /// Sleep/Performance time values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
+#[repr(u8)]
 pub enum SleepTime {
     /// 10 seconds.
-    Sec10,
+    Sec10 = 1,
     /// 30 seconds.
-    Sec30,
+    Sec30 = 3,
     /// 1 minute.
-    Min1,
+    Min1 = 6,
     /// 5 minutes.
-    Min5,
+    Min5 = 30,
     /// 10 minutes.
-    Min10,
+    Min10 = 60,
     /// 30 minutes.
-    Min30,
+    Min30 = 180,
 }
 
 impl SleepTime {
-    /// Convert to wire byte value.
-    pub fn to_byte(self) -> u8 {
-        match self {
-            SleepTime::Sec10 => 1,
-            SleepTime::Sec30 => 3,
-            SleepTime::Min1 => 6,
-            SleepTime::Min5 => 30,
-            SleepTime::Min10 => 60,
-            SleepTime::Min30 => 180,
-        }
-    }
-
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            1 => Some(SleepTime::Sec10),
-            3 => Some(SleepTime::Sec30),
-            6 => Some(SleepTime::Min1),
-            30 => Some(SleepTime::Min5),
-            60 => Some(SleepTime::Min10),
-            180 => Some(SleepTime::Min30),
-            _ => None,
-        }
-    }
-
     /// Get the time in seconds.
     pub fn to_seconds(self) -> u16 {
         match self {
@@ -1474,7 +1312,7 @@ impl Macro {
 }
 
 /// Modifier key codes (for shortcut key type 0).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum ModifierKey {
     /// Left Ctrl.
@@ -1495,23 +1333,6 @@ pub enum ModifierKey {
     RightWin = 128,
 }
 
-impl ModifierKey {
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            1 => Some(ModifierKey::LeftCtrl),
-            2 => Some(ModifierKey::LeftShift),
-            4 => Some(ModifierKey::LeftAlt),
-            8 => Some(ModifierKey::LeftWin),
-            16 => Some(ModifierKey::RightCtrl),
-            32 => Some(ModifierKey::RightShift),
-            64 => Some(ModifierKey::RightAlt),
-            128 => Some(ModifierKey::RightWin),
-            _ => None,
-        }
-    }
-}
-
 impl fmt::Display for ModifierKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1528,7 +1349,7 @@ impl fmt::Display for ModifierKey {
 }
 
 /// Media key codes (for shortcut key type 2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u16)]
 pub enum MediaKey {
     /// Media Player.
@@ -1569,33 +1390,6 @@ pub enum MediaKey {
     Favorites = 0x022A,
 }
 
-impl MediaKey {
-    /// Parse from wire value.
-    pub fn from_u16(value: u16) -> Option<Self> {
-        match value {
-            0x0183 => Some(MediaKey::MediaPlayer),
-            0x00CD => Some(MediaKey::PlayPause),
-            0x00B5 => Some(MediaKey::NextTrack),
-            0x00B6 => Some(MediaKey::PreviousTrack),
-            0x00B7 => Some(MediaKey::Stop),
-            0x00E2 => Some(MediaKey::Mute),
-            0x00E9 => Some(MediaKey::VolumeUp),
-            0x00EA => Some(MediaKey::VolumeDown),
-            0x018A => Some(MediaKey::Email),
-            0x0192 => Some(MediaKey::Calculator),
-            0x0194 => Some(MediaKey::MyComputer),
-            0x0221 => Some(MediaKey::Search),
-            0x0223 => Some(MediaKey::HomePage),
-            0x0224 => Some(MediaKey::WebBack),
-            0x0225 => Some(MediaKey::WebForward),
-            0x0226 => Some(MediaKey::WebStop),
-            0x0227 => Some(MediaKey::Refresh),
-            0x022A => Some(MediaKey::Favorites),
-            _ => None,
-        }
-    }
-}
-
 impl fmt::Display for MediaKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1622,7 +1416,7 @@ impl fmt::Display for MediaKey {
 }
 
 /// Macro mouse button codes (for macro event key type 4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive, Display)]
 #[repr(u8)]
 pub enum MacroMouseButton {
     /// Left button.
@@ -1635,32 +1429,6 @@ pub enum MacroMouseButton {
     Back = 0x08,
     /// Forward button.
     Forward = 0x10,
-}
-
-impl MacroMouseButton {
-    /// Parse from wire byte value.
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0x01 => Some(MacroMouseButton::Left),
-            0x02 => Some(MacroMouseButton::Right),
-            0x04 => Some(MacroMouseButton::Middle),
-            0x08 => Some(MacroMouseButton::Back),
-            0x10 => Some(MacroMouseButton::Forward),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for MacroMouseButton {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MacroMouseButton::Left => write!(f, "Left"),
-            MacroMouseButton::Right => write!(f, "Right"),
-            MacroMouseButton::Middle => write!(f, "Middle"),
-            MacroMouseButton::Back => write!(f, "Back"),
-            MacroMouseButton::Forward => write!(f, "Forward"),
-        }
-    }
 }
 
 /// USB HID Keyboard scan codes.

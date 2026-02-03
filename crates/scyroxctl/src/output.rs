@@ -9,6 +9,36 @@ use serde::Serialize;
 use crate::backend::{DaemonInfo, ProfileInfo};
 use crate::cli::OutputFormat;
 
+/// Print the common configuration fields with the given indent.
+fn print_config_fields(config: &MouseConfig, indent: &str) {
+    println!("{indent}Polling Rate:      {}", config.polling_rate);
+    println!("{indent}Lift-Off Distance: {}", config.lift_off_distance);
+    println!(
+        "{indent}Sleep Timeout:     {} seconds",
+        config.sleep_timeout_seconds
+    );
+    println!(
+        "{indent}Angle Snapping:    {}",
+        if config.angle_snapping { "On" } else { "Off" }
+    );
+    println!(
+        "{indent}Ripple Control:    {}",
+        if config.ripple_control { "On" } else { "Off" }
+    );
+    println!(
+        "{indent}High Speed Mode:   {}",
+        if config.high_speed_mode { "On" } else { "Off" }
+    );
+    println!(
+        "{indent}Long Distance:     {}",
+        if config.long_distance_mode {
+            "On"
+        } else {
+            "Off"
+        }
+    );
+}
+
 /// Output handler for formatting command results.
 #[derive(Debug, Clone)]
 pub struct Output {
@@ -31,32 +61,7 @@ impl Output {
         match self.format {
             OutputFormat::Text => {
                 println!("Configuration:");
-                println!("  Polling Rate:      {}", config.polling_rate);
-                println!("  Lift-Off Distance: {}", config.lift_off_distance);
-                println!(
-                    "  Sleep Timeout:     {} seconds",
-                    config.sleep_timeout_seconds
-                );
-                println!(
-                    "  Angle Snapping:    {}",
-                    if config.angle_snapping { "On" } else { "Off" }
-                );
-                println!(
-                    "  Ripple Control:    {}",
-                    if config.ripple_control { "On" } else { "Off" }
-                );
-                println!(
-                    "  High Speed Mode:   {}",
-                    if config.high_speed_mode { "On" } else { "Off" }
-                );
-                println!(
-                    "  Long Distance:     {}",
-                    if config.long_distance_mode {
-                        "On"
-                    } else {
-                        "Off"
-                    }
-                );
+                print_config_fields(config, "  ");
             }
             OutputFormat::Json => {
                 println!("{}", serde_json::to_string(config).unwrap_or_default());
@@ -189,44 +194,7 @@ impl Output {
                 );
                 println!();
                 println!("Configuration:");
-                println!("  Polling Rate:      {}", profile.config.polling_rate);
-                println!("  Lift-Off Distance: {}", profile.config.lift_off_distance);
-                println!(
-                    "  Sleep Timeout:     {} seconds",
-                    profile.config.sleep_timeout_seconds
-                );
-                println!(
-                    "  Angle Snapping:    {}",
-                    if profile.config.angle_snapping {
-                        "On"
-                    } else {
-                        "Off"
-                    }
-                );
-                println!(
-                    "  Ripple Control:    {}",
-                    if profile.config.ripple_control {
-                        "On"
-                    } else {
-                        "Off"
-                    }
-                );
-                println!(
-                    "  High Speed Mode:   {}",
-                    if profile.config.high_speed_mode {
-                        "On"
-                    } else {
-                        "Off"
-                    }
-                );
-                println!(
-                    "  Long Distance:     {}",
-                    if profile.config.long_distance_mode {
-                        "On"
-                    } else {
-                        "Off"
-                    }
-                );
+                print_config_fields(&profile.config, "  ");
             }
             OutputFormat::Json => {
                 println!("{}", serde_json::to_string(profile).unwrap_or_default());

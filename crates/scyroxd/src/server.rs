@@ -13,11 +13,44 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, info, instrument, warn};
 
 use scyrox::{Mouse, MouseError};
-use scyrox_proto::*;
+use scyrox_proto::{
+    ApplyProfileRequest, BatteryStatus as ProtoBattery, ConnectionChange, ConnectionMode,
+    CreateProfileRequest, DaemonInfo, DeleteProfileRequest, DeviceStatus, Empty, Event,
+    FirmwareInfo as ProtoFirmware, GetProfileRequest, LiftOffDistance as ProtoLod,
+    PollingRate as ProtoRate, Profile, ProfileApplied, ProfileList, Scyrox, SetBoolRequest,
+    SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetPollingRateRequest,
+    SetSleepTimeoutRequest, SetSleepTimeoutResponse, SettingsChanged, UpdateProfileRequest, event,
+    hz_to_proto_polling_rate, mm_to_proto_lod,
+};
 
 use crate::config::DaemonConfig;
 use crate::hotplug::DeviceEvent;
 use crate::profiles::{ProfileConfig, ProfileStore};
+
+/// Macro to wrap RPC handler logic with mouse locking and error handling.
+///
+/// The body should return `Result<T, scyrox::MouseError>`. The macro will:
+/// 1. Ensure the mouse is connected
+/// 2. Lock the mouse mutex
+/// 3. Execute the body
+/// 4. Convert MouseError to Status if needed
+/// 5. Wrap success in Response::new()
+macro_rules! with_mouse {
+    ($self:expr, |$mouse:ident| $body:expr) => {{
+        $self.ensure_mouse().await?;
+        let guard = $self.mouse.lock().await;
+        let $mouse = guard.as_ref().unwrap();
+        #[allow(clippy::redundant_closure_call)]
+        let result: ::std::result::Result<_, scyrox::MouseError> = (async { $body }).await;
+        match result {
+            Ok(val) => Ok(Response::new(val)),
+            Err(e) => {
+                drop(guard);
+                Err($self.handle_mouse_error(e).await)
+            }
+        }
+    }};
+}
 
 /// The gRPC service implementation.
 pub struct ScyroxService {
@@ -106,47 +139,7 @@ impl ScyroxService {
 
     /// Spawn a task to forward mouse notifications to clients.
     fn spawn_notification_forwarder(&self, mouse: &Mouse) {
-        let notification_rx = mouse.subscribe_notifications();
-        let client_event_tx = self.client_event_tx.clone();
-
-        tokio::spawn(async move {
-            let mut rx = notification_rx;
-            loop {
-                match rx.recv().await {
-                    Ok(notif) => match notif {
-                        scyrox::Notification::StatusChanged(flags) => {
-                            let _ = client_event_tx.send(Event {
-                                event: Some(event::Event::SettingsChanged(SettingsChanged {
-                                    dpi_changed: flags.dpi_changed(),
-                                    report_rate_changed: flags.report_rate_changed(),
-                                    profile_changed: flags.profile_changed(),
-                                    dpi_settings_changed: flags.dpi_settings_changed(),
-                                    light_settings_changed: flags.light_settings_changed(),
-                                    battery_changed: flags.battery_changed(),
-                                })),
-                            });
-                        }
-                        scyrox::Notification::Disconnected => {
-                            let _ = client_event_tx.send(Event {
-                                event: Some(event::Event::ConnectionChange(ConnectionChange {
-                                    connected: false,
-                                    mode: ConnectionMode::Unspecified as i32,
-                                })),
-                            });
-                            break;
-                        }
-                    },
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(skipped = n, "notification forwarder lagged, continuing");
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        debug!("notification channel closed, forwarder exiting");
-                        break;
-                    }
-                }
-            }
-        });
+        spawn_notification_forwarder(mouse, self.client_event_tx.clone());
     }
 
     /// Invalidate the current mouse connection.
@@ -241,7 +234,7 @@ impl ScyroxService {
                         match Mouse::open().await {
                             Ok(m) => {
                                 // Subscribe to notifications and spawn forwarder
-                                spawn_notification_forwarder_static(&m, client_event_tx.clone());
+                                spawn_notification_forwarder(&m, client_event_tx.clone());
 
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
@@ -307,7 +300,7 @@ impl ScyroxService {
                         match Mouse::open().await {
                             Ok(m) => {
                                 // Subscribe to notifications and spawn forwarder
-                                spawn_notification_forwarder_static(&m, client_event_tx.clone());
+                                spawn_notification_forwarder(&m, client_event_tx.clone());
 
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
@@ -349,7 +342,7 @@ impl ScyroxService {
 }
 
 /// Spawn a task to forward mouse notifications to clients (static version for use in closures).
-fn spawn_notification_forwarder_static(mouse: &Mouse, client_event_tx: broadcast::Sender<Event>) {
+fn spawn_notification_forwarder(mouse: &Mouse, client_event_tx: broadcast::Sender<Event>) {
     let notification_rx = mouse.subscribe_notifications();
 
     tokio::spawn(async move {
@@ -493,49 +486,29 @@ impl Scyrox for ScyroxService {
     async fn get_battery(
         &self,
         _request: Request<Empty>,
-    ) -> Result<Response<BatteryStatus>, Status> {
-        self.ensure_mouse().await?;
-
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        let battery = match mouse.get_battery().await {
-            Ok(b) => b,
-            Err(e) => {
-                drop(guard);
-                return Err(self.handle_mouse_error(e).await);
-            }
-        };
-
-        Ok(Response::new(BatteryStatus {
-            voltage_mv: battery.voltage_mv as u32,
-            percentage: battery.percentage as u32,
-            charging: battery.charging,
-        }))
+    ) -> Result<Response<ProtoBattery>, Status> {
+        with_mouse!(self, |mouse| {
+            let battery = mouse.get_battery().await?;
+            Ok(ProtoBattery {
+                voltage_mv: battery.voltage_mv as u32,
+                percentage: battery.percentage as u32,
+                charging: battery.charging,
+            })
+        })
     }
 
     #[instrument(skip(self, _request))]
     async fn get_firmware(
         &self,
         _request: Request<Empty>,
-    ) -> Result<Response<FirmwareInfo>, Status> {
-        self.ensure_mouse().await?;
-
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        let firmware = match mouse.get_firmware_info().await {
-            Ok(f) => f,
-            Err(e) => {
-                drop(guard);
-                return Err(self.handle_mouse_error(e).await);
-            }
-        };
-
-        Ok(Response::new(FirmwareInfo {
-            mouse_version: firmware.mouse_version,
-            receiver_version: firmware.receiver_version,
-        }))
+    ) -> Result<Response<ProtoFirmware>, Status> {
+        with_mouse!(self, |mouse| {
+            let firmware = mouse.get_firmware_info().await?;
+            Ok(ProtoFirmware {
+                mouse_version: firmware.mouse_version,
+                receiver_version: firmware.receiver_version,
+            })
+        })
     }
 
     // =========================================================================
@@ -543,40 +516,30 @@ impl Scyrox for ScyroxService {
     // =========================================================================
 
     #[instrument(skip(self, _request))]
-    async fn get_config(&self, _request: Request<Empty>) -> Result<Response<MouseConfig>, Status> {
-        self.ensure_mouse().await?;
-
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        let config = match mouse.get_config().await {
-            Ok(c) => c,
-            Err(e) => {
-                drop(guard);
-                return Err(self.handle_mouse_error(e).await);
-            }
-        };
-
-        Ok(Response::new(convert_config_to_proto(&config)))
+    async fn get_config(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<scyrox_proto::MouseConfig>, Status> {
+        with_mouse!(self, |mouse| {
+            let config = mouse.get_config().await?;
+            Ok(scyrox_proto::MouseConfig::from(&config))
+        })
     }
 
     #[instrument(skip(self, request))]
-    async fn set_config(&self, request: Request<MouseConfig>) -> Result<Response<Empty>, Status> {
-        self.ensure_mouse().await?;
-
+    async fn set_config(
+        &self,
+        request: Request<scyrox_proto::MouseConfig>,
+    ) -> Result<Response<Empty>, Status> {
         let proto_config = request.into_inner();
-        let config = convert_proto_to_config(&proto_config)?;
+        let config = scyrox::MouseConfig::try_from(&proto_config)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        if let Err(e) = mouse.set_config(&config).await {
-            drop(guard);
-            return Err(self.handle_mouse_error(e).await);
-        }
-
-        info!("Configuration updated");
-        Ok(Response::new(Empty {}))
+        with_mouse!(self, |mouse| {
+            mouse.set_config(&config).await?;
+            info!("Configuration updated");
+            Ok(Empty {})
+        })
     }
 
     #[instrument(skip(self, request))]
@@ -584,20 +547,14 @@ impl Scyrox for ScyroxService {
         &self,
         request: Request<SetPollingRateRequest>,
     ) -> Result<Response<Empty>, Status> {
-        self.ensure_mouse().await?;
+        let rate = scyrox::PollingRate::try_from(request.into_inner().rate())
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        let rate = convert_polling_rate(request.into_inner().rate())?;
-
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        if let Err(e) = mouse.set_polling_rate(rate).await {
-            drop(guard);
-            return Err(self.handle_mouse_error(e).await);
-        }
-
-        info!(?rate, "Polling rate updated");
-        Ok(Response::new(Empty {}))
+        with_mouse!(self, |mouse| {
+            mouse.set_polling_rate(rate).await?;
+            info!(?rate, "Polling rate updated");
+            Ok(Empty {})
+        })
     }
 
     #[instrument(skip(self, request))]
@@ -605,20 +562,14 @@ impl Scyrox for ScyroxService {
         &self,
         request: Request<SetLiftOffDistanceRequest>,
     ) -> Result<Response<Empty>, Status> {
-        self.ensure_mouse().await?;
+        let lod = scyrox::LiftOffDistance::try_from(request.into_inner().distance())
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        let lod = convert_lift_off_distance(request.into_inner().distance())?;
-
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        if let Err(e) = mouse.set_lift_off_distance(lod).await {
-            drop(guard);
-            return Err(self.handle_mouse_error(e).await);
-        }
-
-        info!(?lod, "Lift-off distance updated");
-        Ok(Response::new(Empty {}))
+        with_mouse!(self, |mouse| {
+            mouse.set_lift_off_distance(lod).await?;
+            info!(?lod, "Lift-off distance updated");
+            Ok(Empty {})
+        })
     }
 
     #[instrument(skip(self, request))]
@@ -626,25 +577,15 @@ impl Scyrox for ScyroxService {
         &self,
         request: Request<SetSleepTimeoutRequest>,
     ) -> Result<Response<SetSleepTimeoutResponse>, Status> {
-        self.ensure_mouse().await?;
-
         let seconds = request.into_inner().seconds as u16;
 
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        let actual_seconds = match mouse.set_sleep_timeout(seconds).await {
-            Ok(actual) => actual,
-            Err(e) => {
-                drop(guard);
-                return Err(self.handle_mouse_error(e).await);
-            }
-        };
-
-        info!(actual_seconds, "Sleep timeout updated");
-        Ok(Response::new(SetSleepTimeoutResponse {
-            actual_seconds: actual_seconds as u32,
-        }))
+        with_mouse!(self, |mouse| {
+            let actual_seconds = mouse.set_sleep_timeout(seconds).await?;
+            info!(actual_seconds, "Sleep timeout updated");
+            Ok(SetSleepTimeoutResponse {
+                actual_seconds: actual_seconds as u32,
+            })
+        })
     }
 
     #[instrument(skip(self, request))]
@@ -652,20 +593,13 @@ impl Scyrox for ScyroxService {
         &self,
         request: Request<SetBoolRequest>,
     ) -> Result<Response<Empty>, Status> {
-        self.ensure_mouse().await?;
-
         let enabled = request.into_inner().enabled;
 
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        if let Err(e) = mouse.set_angle_snapping(enabled).await {
-            drop(guard);
-            return Err(self.handle_mouse_error(e).await);
-        }
-
-        info!(enabled, "Angle snapping updated");
-        Ok(Response::new(Empty {}))
+        with_mouse!(self, |mouse| {
+            mouse.set_angle_snapping(enabled).await?;
+            info!(enabled, "Angle snapping updated");
+            Ok(Empty {})
+        })
     }
 
     #[instrument(skip(self, request))]
@@ -673,20 +607,13 @@ impl Scyrox for ScyroxService {
         &self,
         request: Request<SetBoolRequest>,
     ) -> Result<Response<Empty>, Status> {
-        self.ensure_mouse().await?;
-
         let enabled = request.into_inner().enabled;
 
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        if let Err(e) = mouse.set_ripple_control(enabled).await {
-            drop(guard);
-            return Err(self.handle_mouse_error(e).await);
-        }
-
-        info!(enabled, "Ripple control updated");
-        Ok(Response::new(Empty {}))
+        with_mouse!(self, |mouse| {
+            mouse.set_ripple_control(enabled).await?;
+            info!(enabled, "Ripple control updated");
+            Ok(Empty {})
+        })
     }
 
     #[instrument(skip(self, request))]
@@ -694,20 +621,13 @@ impl Scyrox for ScyroxService {
         &self,
         request: Request<SetBoolRequest>,
     ) -> Result<Response<Empty>, Status> {
-        self.ensure_mouse().await?;
-
         let enabled = request.into_inner().enabled;
 
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        if let Err(e) = mouse.set_high_speed_mode(enabled).await {
-            drop(guard);
-            return Err(self.handle_mouse_error(e).await);
-        }
-
-        info!(enabled, "High speed mode updated");
-        Ok(Response::new(Empty {}))
+        with_mouse!(self, |mouse| {
+            mouse.set_high_speed_mode(enabled).await?;
+            info!(enabled, "High speed mode updated");
+            Ok(Empty {})
+        })
     }
 
     #[instrument(skip(self, request))]
@@ -715,20 +635,13 @@ impl Scyrox for ScyroxService {
         &self,
         request: Request<SetBoolRequest>,
     ) -> Result<Response<Empty>, Status> {
-        self.ensure_mouse().await?;
-
         let enabled = request.into_inner().enabled;
 
-        let guard = self.mouse.lock().await;
-        let mouse = guard.as_ref().unwrap();
-
-        if let Err(e) = mouse.set_long_distance_mode(enabled).await {
-            drop(guard);
-            return Err(self.handle_mouse_error(e).await);
-        }
-
-        info!(enabled, "Long distance mode updated");
-        Ok(Response::new(Empty {}))
+        with_mouse!(self, |mouse| {
+            mouse.set_long_distance_mode(enabled).await?;
+            info!(enabled, "Long distance mode updated");
+            Ok(Empty {})
+        })
     }
 
     // =========================================================================
@@ -746,7 +659,7 @@ impl Scyrox for ScyroxService {
             .await
             .map_err(|e| Status::internal(format!("Failed to list profiles: {}", e)))?;
 
-        let proto_profiles = profiles.into_iter().map(convert_profile_to_proto).collect();
+        let proto_profiles = profiles.into_iter().map(profile_to_proto).collect();
 
         Ok(Response::new(ProfileList {
             profiles: proto_profiles,
@@ -766,7 +679,7 @@ impl Scyrox for ScyroxService {
             .await
             .map_err(|e| Status::not_found(format!("Profile not found: {}", e)))?;
 
-        Ok(Response::new(convert_profile_to_proto(profile)))
+        Ok(Response::new(profile_to_proto(profile)))
     }
 
     #[instrument(skip(self, request))]
@@ -780,7 +693,7 @@ impl Scyrox for ScyroxService {
             .config
             .ok_or_else(|| Status::invalid_argument("Config is required"))?;
 
-        let profile_config = convert_proto_to_profile_config(&config)?;
+        let profile_config = proto_to_profile_config(&config)?;
 
         let mut profile = self
             .profiles
@@ -796,7 +709,7 @@ impl Scyrox for ScyroxService {
             profile.is_default = true;
         }
 
-        Ok(Response::new(convert_profile_to_proto(profile)))
+        Ok(Response::new(profile_to_proto(profile)))
     }
 
     #[instrument(skip(self, request))]
@@ -808,7 +721,7 @@ impl Scyrox for ScyroxService {
 
         let config = req
             .config
-            .map(|c| convert_proto_to_profile_config(&c))
+            .map(|c| proto_to_profile_config(&c))
             .transpose()?;
 
         let profile = self
@@ -817,7 +730,7 @@ impl Scyrox for ScyroxService {
             .await
             .map_err(|e| Status::internal(format!("Failed to update profile: {}", e)))?;
 
-        Ok(Response::new(convert_profile_to_proto(profile)))
+        Ok(Response::new(profile_to_proto(profile)))
     }
 
     #[instrument(skip(self, request))]
@@ -960,93 +873,14 @@ impl Scyrox for ScyroxService {
 // Conversion Helpers
 // =============================================================================
 
-fn convert_config_to_proto(config: &scyrox::MouseConfig) -> MouseConfig {
-    MouseConfig {
-        polling_rate: polling_rate_to_proto(config.polling_rate) as i32,
-        lift_off_distance: lift_off_distance_to_proto(config.lift_off_distance) as i32,
-        sleep_timeout_seconds: config.sleep_timeout_seconds as u32,
-        angle_snapping: config.angle_snapping,
-        ripple_control: config.ripple_control,
-        high_speed_mode: config.high_speed_mode,
-        long_distance_mode: config.long_distance_mode,
-    }
-}
-
-fn convert_proto_to_config(proto: &MouseConfig) -> Result<scyrox::MouseConfig, Status> {
-    Ok(scyrox::MouseConfig {
-        polling_rate: convert_polling_rate(
-            PollingRate::try_from(proto.polling_rate).unwrap_or(PollingRate::Unspecified),
-        )?,
-        lift_off_distance: convert_lift_off_distance(
-            LiftOffDistance::try_from(proto.lift_off_distance)
-                .unwrap_or(LiftOffDistance::Unspecified),
-        )?,
-        sleep_timeout_seconds: proto.sleep_timeout_seconds as u16,
-        angle_snapping: proto.angle_snapping,
-        ripple_control: proto.ripple_control,
-        high_speed_mode: proto.high_speed_mode,
-        long_distance_mode: proto.long_distance_mode,
-        // Additional fields use sensible defaults
-        debounce_time: 0,
-        motion_sync: false,
-        moving_off_light_time: 0,
-        performance_time: scyrox::SleepTime::Min1,
-        sensor_mode: scyrox::SensorMode::HighPerformance,
-        sensor_20k: false,
-    })
-}
-
-fn convert_polling_rate(rate: PollingRate) -> Result<scyrox::PollingRate, Status> {
-    match rate {
-        PollingRate::Unspecified => Err(Status::invalid_argument("Polling rate not specified")),
-        PollingRate::PollingRate125 => Ok(scyrox::PollingRate::Hz125),
-        PollingRate::PollingRate250 => Ok(scyrox::PollingRate::Hz250),
-        PollingRate::PollingRate500 => Ok(scyrox::PollingRate::Hz500),
-        PollingRate::PollingRate1000 => Ok(scyrox::PollingRate::Hz1000),
-        PollingRate::PollingRate2000 => Ok(scyrox::PollingRate::Hz2000),
-        PollingRate::PollingRate4000 => Ok(scyrox::PollingRate::Hz4000),
-        PollingRate::PollingRate8000 => Ok(scyrox::PollingRate::Hz8000),
-    }
-}
-
-fn polling_rate_to_proto(rate: scyrox::PollingRate) -> PollingRate {
-    match rate {
-        scyrox::PollingRate::Hz125 => PollingRate::PollingRate125,
-        scyrox::PollingRate::Hz250 => PollingRate::PollingRate250,
-        scyrox::PollingRate::Hz500 => PollingRate::PollingRate500,
-        scyrox::PollingRate::Hz1000 => PollingRate::PollingRate1000,
-        scyrox::PollingRate::Hz2000 => PollingRate::PollingRate2000,
-        scyrox::PollingRate::Hz4000 => PollingRate::PollingRate4000,
-        scyrox::PollingRate::Hz8000 => PollingRate::PollingRate8000,
-    }
-}
-
-fn convert_lift_off_distance(lod: LiftOffDistance) -> Result<scyrox::LiftOffDistance, Status> {
-    match lod {
-        LiftOffDistance::Unspecified => {
-            Err(Status::invalid_argument("Lift-off distance not specified"))
-        }
-        LiftOffDistance::Low => Ok(scyrox::LiftOffDistance::Low),
-        LiftOffDistance::Medium => Ok(scyrox::LiftOffDistance::Medium),
-        LiftOffDistance::High => Ok(scyrox::LiftOffDistance::High),
-    }
-}
-
-fn lift_off_distance_to_proto(lod: scyrox::LiftOffDistance) -> LiftOffDistance {
-    match lod {
-        scyrox::LiftOffDistance::Low => LiftOffDistance::Low,
-        scyrox::LiftOffDistance::Medium => LiftOffDistance::Medium,
-        scyrox::LiftOffDistance::High => LiftOffDistance::High,
-    }
-}
-
-fn convert_profile_to_proto(profile: crate::profiles::Profile) -> Profile {
+/// Convert a profile (with Hz/mm fields) to proto format.
+fn profile_to_proto(profile: crate::profiles::Profile) -> Profile {
     Profile {
         id: profile.id,
         name: profile.name,
-        config: Some(MouseConfig {
-            polling_rate: hz_to_polling_rate(profile.config.polling_rate_hz) as i32,
-            lift_off_distance: mm_to_lift_off_distance(profile.config.lift_off_distance_mm) as i32,
+        config: Some(scyrox_proto::MouseConfig {
+            polling_rate: hz_to_proto_polling_rate(profile.config.polling_rate_hz) as i32,
+            lift_off_distance: mm_to_proto_lod(profile.config.lift_off_distance_mm) as i32,
             sleep_timeout_seconds: profile.config.sleep_timeout_seconds as u32,
             angle_snapping: profile.config.angle_snapping,
             ripple_control: profile.config.ripple_control,
@@ -1057,13 +891,17 @@ fn convert_profile_to_proto(profile: crate::profiles::Profile) -> Profile {
     }
 }
 
-fn convert_proto_to_profile_config(proto: &MouseConfig) -> Result<ProfileConfig, Status> {
-    let polling_rate = convert_polling_rate(
-        PollingRate::try_from(proto.polling_rate).unwrap_or(PollingRate::Unspecified),
-    )?;
-    let lod = convert_lift_off_distance(
-        LiftOffDistance::try_from(proto.lift_off_distance).unwrap_or(LiftOffDistance::Unspecified),
-    )?;
+/// Convert proto MouseConfig to ProfileConfig (with Hz/mm fields).
+fn proto_to_profile_config(proto: &scyrox_proto::MouseConfig) -> Result<ProfileConfig, Status> {
+    let polling_rate = scyrox::PollingRate::try_from(
+        ProtoRate::try_from(proto.polling_rate).unwrap_or(ProtoRate::Unspecified),
+    )
+    .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+    let lod = scyrox::LiftOffDistance::try_from(
+        ProtoLod::try_from(proto.lift_off_distance).unwrap_or(ProtoLod::Unspecified),
+    )
+    .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
     Ok(ProfileConfig {
         polling_rate_hz: polling_rate.to_hz(),
@@ -1076,70 +914,32 @@ fn convert_proto_to_profile_config(proto: &MouseConfig) -> Result<ProfileConfig,
     })
 }
 
+/// Convert ProfileConfig (with Hz/mm fields) to MouseConfig for the device.
 fn profile_config_to_mouse_config(config: &ProfileConfig) -> Result<scyrox::MouseConfig, Status> {
+    let polling_rate = scyrox::PollingRate::from_hz(config.polling_rate_hz).ok_or_else(|| {
+        Status::invalid_argument(format!("Invalid polling rate: {}", config.polling_rate_hz))
+    })?;
+
+    let lift_off_distance = scyrox::LiftOffDistance::from_mm(config.lift_off_distance_mm)
+        .unwrap_or_else(|| {
+            // Fall back to range-based matching for approximate values
+            if config.lift_off_distance_mm <= 0.85 {
+                scyrox::LiftOffDistance::Low
+            } else if config.lift_off_distance_mm <= 1.5 {
+                scyrox::LiftOffDistance::Medium
+            } else {
+                scyrox::LiftOffDistance::High
+            }
+        });
+
     Ok(scyrox::MouseConfig {
-        polling_rate: hz_to_scyrox_polling_rate(config.polling_rate_hz)?,
-        lift_off_distance: mm_to_scyrox_lod(config.lift_off_distance_mm)?,
+        polling_rate,
+        lift_off_distance,
         sleep_timeout_seconds: config.sleep_timeout_seconds,
         angle_snapping: config.angle_snapping,
         ripple_control: config.ripple_control,
         high_speed_mode: config.high_speed_mode,
         long_distance_mode: config.long_distance_mode,
-        // Additional fields use sensible defaults
-        debounce_time: 0,
-        motion_sync: false,
-        moving_off_light_time: 0,
-        performance_time: scyrox::SleepTime::Min1,
-        sensor_mode: scyrox::SensorMode::HighPerformance,
-        sensor_20k: false,
+        ..Default::default()
     })
-}
-
-fn hz_to_polling_rate(hz: u16) -> PollingRate {
-    match hz {
-        125 => PollingRate::PollingRate125,
-        250 => PollingRate::PollingRate250,
-        500 => PollingRate::PollingRate500,
-        1000 => PollingRate::PollingRate1000,
-        2000 => PollingRate::PollingRate2000,
-        4000 => PollingRate::PollingRate4000,
-        8000 => PollingRate::PollingRate8000,
-        _ => PollingRate::Unspecified,
-    }
-}
-
-fn hz_to_scyrox_polling_rate(hz: u16) -> Result<scyrox::PollingRate, Status> {
-    match hz {
-        125 => Ok(scyrox::PollingRate::Hz125),
-        250 => Ok(scyrox::PollingRate::Hz250),
-        500 => Ok(scyrox::PollingRate::Hz500),
-        1000 => Ok(scyrox::PollingRate::Hz1000),
-        2000 => Ok(scyrox::PollingRate::Hz2000),
-        4000 => Ok(scyrox::PollingRate::Hz4000),
-        8000 => Ok(scyrox::PollingRate::Hz8000),
-        _ => Err(Status::invalid_argument(format!(
-            "Invalid polling rate: {}",
-            hz
-        ))),
-    }
-}
-
-fn mm_to_lift_off_distance(mm: f32) -> LiftOffDistance {
-    if mm <= 0.85 {
-        LiftOffDistance::Low
-    } else if mm <= 1.5 {
-        LiftOffDistance::Medium
-    } else {
-        LiftOffDistance::High
-    }
-}
-
-fn mm_to_scyrox_lod(mm: f32) -> Result<scyrox::LiftOffDistance, Status> {
-    if mm <= 0.85 {
-        Ok(scyrox::LiftOffDistance::Low)
-    } else if mm <= 1.5 {
-        Ok(scyrox::LiftOffDistance::Medium)
-    } else {
-        Ok(scyrox::LiftOffDistance::High)
-    }
 }

@@ -7,6 +7,9 @@ use tokio::sync::Mutex;
 
 use crate::backend::{Backend, DaemonInfo, ProfileInfo};
 
+const PROFILE_REQUIRES_DAEMON: &str =
+    "Profile management requires the daemon. Start it with: scyroxctl daemon start";
+
 /// Backend that communicates directly with the mouse via USB.
 pub struct DirectBackend {
     mouse: Mutex<Mouse>,
@@ -80,39 +83,27 @@ impl Backend for DirectBackend {
 
     // Profile operations are not available in direct mode
     async fn list_profiles(&self) -> Result<Vec<ProfileInfo>> {
-        Err(anyhow!(
-            "Profile management requires the daemon. Start it with: scyroxctl daemon start"
-        ))
+        Err(anyhow!(PROFILE_REQUIRES_DAEMON))
     }
 
     async fn get_profile(&self, _id: &str) -> Result<ProfileInfo> {
-        Err(anyhow!(
-            "Profile management requires the daemon. Start it with: scyroxctl daemon start"
-        ))
+        Err(anyhow!(PROFILE_REQUIRES_DAEMON))
     }
 
     async fn create_profile(&self, _name: &str, _set_default: bool) -> Result<ProfileInfo> {
-        Err(anyhow!(
-            "Profile management requires the daemon. Start it with: scyroxctl daemon start"
-        ))
+        Err(anyhow!(PROFILE_REQUIRES_DAEMON))
     }
 
     async fn apply_profile(&self, _id: &str) -> Result<()> {
-        Err(anyhow!(
-            "Profile management requires the daemon. Start it with: scyroxctl daemon start"
-        ))
+        Err(anyhow!(PROFILE_REQUIRES_DAEMON))
     }
 
     async fn delete_profile(&self, _id: &str) -> Result<()> {
-        Err(anyhow!(
-            "Profile management requires the daemon. Start it with: scyroxctl daemon start"
-        ))
+        Err(anyhow!(PROFILE_REQUIRES_DAEMON))
     }
 
     async fn set_default_profile(&self, _id: &str) -> Result<()> {
-        Err(anyhow!(
-            "Profile management requires the daemon. Start it with: scyroxctl daemon start"
-        ))
+        Err(anyhow!(PROFILE_REQUIRES_DAEMON))
     }
 
     async fn get_daemon_info(&self) -> Result<Option<DaemonInfo>> {

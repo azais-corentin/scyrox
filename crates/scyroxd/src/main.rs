@@ -14,7 +14,6 @@ mod profiles;
 mod server;
 
 use std::io;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -30,14 +29,12 @@ use tonic::transport::server::Connected;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+use scyrox::paths::get_socket_path;
 use scyrox_proto::ScyroxServer;
 
 use crate::config::DaemonConfig;
 use crate::hotplug::HotplugMonitor;
 use crate::server::ScyroxService;
-
-/// Default socket name within the runtime directory.
-const SOCKET_NAME: &str = "scyroxd.sock";
 
 pin_project! {
     /// Wrapper for interprocess stream that implements tonic's Connected trait.
@@ -110,7 +107,9 @@ async fn main() -> Result<()> {
     info!(?config, "Loaded configuration");
 
     // Ensure runtime directory exists
-    let socket_path = get_socket_path(&dirs)?;
+    let socket_path = get_socket_path().ok_or_else(|| {
+        anyhow::anyhow!("Failed to determine socket path: no runtime or state directory available")
+    })?;
     if let Some(parent) = socket_path.parent() {
         fs::create_dir_all(parent).await?;
     }
@@ -183,17 +182,4 @@ async fn main() -> Result<()> {
 
     info!("Daemon stopped");
     Ok(())
-}
-
-/// Get the socket path, using XDG_RUNTIME_DIR if available.
-fn get_socket_path(dirs: &ProjectDirs) -> Result<PathBuf> {
-    // Try XDG_RUNTIME_DIR first (e.g., /run/user/1000)
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        let path = PathBuf::from(runtime_dir).join("scyrox").join(SOCKET_NAME);
-        return Ok(path);
-    }
-
-    // Fall back to state directory
-    let state_dir = dirs.state_dir().unwrap_or_else(|| dirs.data_local_dir());
-    Ok(state_dir.join(SOCKET_NAME))
 }

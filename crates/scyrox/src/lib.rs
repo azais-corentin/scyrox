@@ -26,6 +26,7 @@
 pub mod error;
 pub(crate) mod io;
 pub mod mouse;
+pub mod paths;
 pub mod protocol;
 pub mod types;
 

@@ -8,7 +8,10 @@ pub mod proto {
     tonic::include_proto!("scyrox");
 }
 
+mod convert;
+
 // Re-export commonly used types at crate root
+pub use convert::{ConversionError, hz_to_proto_polling_rate, mm_to_proto_lod};
 pub use proto::scyrox_client::ScyroxClient;
 pub use proto::scyrox_server::{Scyrox, ScyroxServer};
 pub use proto::*;

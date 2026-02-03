@@ -1,10 +1,7 @@
 //! gRPC client for connecting to the scyroxd daemon.
 
-use std::path::PathBuf;
-
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use directories::ProjectDirs;
 use hyper_util::rt::TokioIo;
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::prelude::*;
@@ -12,16 +9,17 @@ use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
-use scyrox::{
-    BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate, SensorMode, SleepTime,
-};
+use scyrox::paths::get_socket_path;
+use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate};
 use scyrox_proto::scyrox_client::ScyroxClient;
-use scyrox_proto::*;
+use scyrox_proto::{
+    ApplyProfileRequest, DeleteProfileRequest, Empty, GetProfileRequest,
+    LiftOffDistance as ProtoLod, PollingRate as ProtoRate, SetBoolRequest,
+    SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetPollingRateRequest,
+    SetSleepTimeoutRequest,
+};
 
 use crate::backend::{Backend, DaemonInfo, ProfileInfo};
-
-/// Default socket name.
-const SOCKET_NAME: &str = "scyroxd.sock";
 
 /// Client that connects to the scyroxd daemon via gRPC over IPC.
 pub struct DaemonClient {
@@ -31,7 +29,11 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// Connect to the daemon.
     pub async fn connect() -> Result<Self> {
-        let socket_path = get_socket_path()?;
+        let socket_path = get_socket_path().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Failed to determine socket path: no runtime or state directory available"
+            )
+        })?;
 
         // Create a channel that connects over Unix socket
         let channel = Endpoint::try_from("http://[::]:50051")?
@@ -72,7 +74,7 @@ impl Backend for DaemonClient {
     async fn get_config(&self) -> Result<MouseConfig> {
         let mut client = self.client.lock().await;
         let response = client.get_config(Empty {}).await?.into_inner();
-        proto_to_config(&response)
+        MouseConfig::try_from(&response).map_err(|e| anyhow!("Failed to convert config: {}", e))
     }
 
     async fn get_battery(&self) -> Result<BatteryStatus> {
@@ -107,7 +109,7 @@ impl Backend for DaemonClient {
         let mut client = self.client.lock().await;
         client
             .set_polling_rate(SetPollingRateRequest {
-                rate: polling_rate_to_proto(rate) as i32,
+                rate: ProtoRate::from(rate) as i32,
             })
             .await?;
         Ok(())
@@ -117,7 +119,7 @@ impl Backend for DaemonClient {
         let mut client = self.client.lock().await;
         client
             .set_lift_off_distance(SetLiftOffDistanceRequest {
-                distance: lod_to_proto(lod) as i32,
+                distance: ProtoLod::from(lod) as i32,
             })
             .await?;
         Ok(())
@@ -190,9 +192,9 @@ impl Backend for DaemonClient {
 
         let mut client = self.client.lock().await;
         let response = client
-            .create_profile(CreateProfileRequest {
+            .create_profile(scyrox_proto::CreateProfileRequest {
                 name: name.to_string(),
-                config: Some(config_to_proto(&config)),
+                config: Some(scyrox_proto::MouseConfig::from(&config)),
                 set_as_default: set_default,
             })
             .await?
@@ -235,96 +237,9 @@ impl Backend for DaemonClient {
     }
 }
 
-/// Get the socket path.
-fn get_socket_path() -> Result<PathBuf> {
-    // Try XDG_RUNTIME_DIR first
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return Ok(PathBuf::from(runtime_dir).join("scyrox").join(SOCKET_NAME));
-    }
-
-    // Fall back to state directory
-    let dirs =
-        ProjectDirs::from("", "", "scyrox").context("Failed to determine project directories")?;
-    let state_dir = dirs.state_dir().unwrap_or_else(|| dirs.data_local_dir());
-    Ok(state_dir.join(SOCKET_NAME))
-}
-
 // =============================================================================
 // Conversion helpers
 // =============================================================================
-
-fn proto_to_config(proto: &scyrox_proto::MouseConfig) -> Result<MouseConfig> {
-    Ok(MouseConfig {
-        polling_rate: proto_to_polling_rate(proto.polling_rate)?,
-        lift_off_distance: proto_to_lod(proto.lift_off_distance)?,
-        sleep_timeout_seconds: proto.sleep_timeout_seconds as u16,
-        angle_snapping: proto.angle_snapping,
-        ripple_control: proto.ripple_control,
-        high_speed_mode: proto.high_speed_mode,
-        long_distance_mode: proto.long_distance_mode,
-        // Additional fields use sensible defaults
-        debounce_time: 0,
-        motion_sync: false,
-        moving_off_light_time: 0,
-        performance_time: SleepTime::Min1,
-        sensor_mode: SensorMode::HighPerformance,
-        sensor_20k: false,
-    })
-}
-
-fn config_to_proto(config: &MouseConfig) -> scyrox_proto::MouseConfig {
-    scyrox_proto::MouseConfig {
-        polling_rate: polling_rate_to_proto(config.polling_rate) as i32,
-        lift_off_distance: lod_to_proto(config.lift_off_distance) as i32,
-        sleep_timeout_seconds: config.sleep_timeout_seconds as u32,
-        angle_snapping: config.angle_snapping,
-        ripple_control: config.ripple_control,
-        high_speed_mode: config.high_speed_mode,
-        long_distance_mode: config.long_distance_mode,
-    }
-}
-
-fn proto_to_polling_rate(value: i32) -> Result<PollingRate> {
-    match scyrox_proto::PollingRate::try_from(value) {
-        Ok(scyrox_proto::PollingRate::PollingRate125) => Ok(PollingRate::Hz125),
-        Ok(scyrox_proto::PollingRate::PollingRate250) => Ok(PollingRate::Hz250),
-        Ok(scyrox_proto::PollingRate::PollingRate500) => Ok(PollingRate::Hz500),
-        Ok(scyrox_proto::PollingRate::PollingRate1000) => Ok(PollingRate::Hz1000),
-        Ok(scyrox_proto::PollingRate::PollingRate2000) => Ok(PollingRate::Hz2000),
-        Ok(scyrox_proto::PollingRate::PollingRate4000) => Ok(PollingRate::Hz4000),
-        Ok(scyrox_proto::PollingRate::PollingRate8000) => Ok(PollingRate::Hz8000),
-        _ => anyhow::bail!("Invalid polling rate: {}", value),
-    }
-}
-
-fn polling_rate_to_proto(rate: PollingRate) -> scyrox_proto::PollingRate {
-    match rate {
-        PollingRate::Hz125 => scyrox_proto::PollingRate::PollingRate125,
-        PollingRate::Hz250 => scyrox_proto::PollingRate::PollingRate250,
-        PollingRate::Hz500 => scyrox_proto::PollingRate::PollingRate500,
-        PollingRate::Hz1000 => scyrox_proto::PollingRate::PollingRate1000,
-        PollingRate::Hz2000 => scyrox_proto::PollingRate::PollingRate2000,
-        PollingRate::Hz4000 => scyrox_proto::PollingRate::PollingRate4000,
-        PollingRate::Hz8000 => scyrox_proto::PollingRate::PollingRate8000,
-    }
-}
-
-fn proto_to_lod(value: i32) -> Result<LiftOffDistance> {
-    match scyrox_proto::LiftOffDistance::try_from(value) {
-        Ok(scyrox_proto::LiftOffDistance::Low) => Ok(LiftOffDistance::Low),
-        Ok(scyrox_proto::LiftOffDistance::Medium) => Ok(LiftOffDistance::Medium),
-        Ok(scyrox_proto::LiftOffDistance::High) => Ok(LiftOffDistance::High),
-        _ => anyhow::bail!("Invalid lift-off distance: {}", value),
-    }
-}
-
-fn lod_to_proto(lod: LiftOffDistance) -> scyrox_proto::LiftOffDistance {
-    match lod {
-        LiftOffDistance::Low => scyrox_proto::LiftOffDistance::Low,
-        LiftOffDistance::Medium => scyrox_proto::LiftOffDistance::Medium,
-        LiftOffDistance::High => scyrox_proto::LiftOffDistance::High,
-    }
-}
 
 fn proto_to_profile_info(proto: scyrox_proto::Profile) -> Result<ProfileInfo> {
     let config = proto
@@ -336,6 +251,7 @@ fn proto_to_profile_info(proto: scyrox_proto::Profile) -> Result<ProfileInfo> {
         id: proto.id,
         name: proto.name,
         is_default: proto.is_default,
-        config: proto_to_config(config)?,
+        config: MouseConfig::try_from(config)
+            .map_err(|e| anyhow!("Failed to convert config: {}", e))?,
     })
 }
