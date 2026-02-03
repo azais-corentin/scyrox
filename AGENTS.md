@@ -42,6 +42,10 @@ cargo clippy -- -D warnings    # Fail on warnings
 
 **Important:** Always use `dprint fmt` to format files. It formats the entire repository at once.
 
+## Working Guidelines
+
+**Do NOT ask for implementation order or task prioritization.** When given multiple tasks, proceed with implementation directly. Asking "should I start with high-impact items or quick wins?" is unnecessary—all items will be completed regardless of order.
+
 ## Code Style Guidelines
 
 ### Imports
