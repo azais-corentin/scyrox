@@ -24,14 +24,12 @@ pub async fn run(cmd: &DaemonCommand, output: &Output) -> Result<()> {
 }
 
 async fn start_daemon(foreground: bool, output: &Output) -> Result<()> {
-    // Check if already running
     if DaemonClient::connect().await.is_ok() {
         output.print_success("Daemon is already running");
         return Ok(());
     }
 
     if foreground {
-        // Run in foreground - just exec scyroxd
         output.print_success("Starting daemon in foreground...");
         let status = Command::new("scyroxd")
             .status()
@@ -41,22 +39,15 @@ async fn start_daemon(foreground: bool, output: &Output) -> Result<()> {
             anyhow::bail!("scyroxd exited with status: {}", status);
         }
     } else {
-        // Daemonize
         output.print_success("Starting daemon...");
 
-        // Use setsid to create a new session
         let child = Command::new("setsid")
             .args(["--fork", "scyroxd"])
             .spawn()
-            .or_else(|_| {
-                // Fallback: just spawn in background
-                Command::new("scyroxd").spawn()
-            })
+            .or_else(|_| Command::new("scyroxd").spawn())
             .context("Failed to start scyroxd")?;
 
         output.print_success(&format!("Started daemon (PID: {})", child.id()));
-
-        // Wait a moment and verify it's running
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         if DaemonClient::connect().await.is_ok() {
@@ -73,11 +64,7 @@ async fn stop_daemon(output: &Output) -> Result<()> {
     match DaemonClient::connect().await {
         Ok(client) => {
             output.print_success("Stopping daemon...");
-
-            // Send shutdown command
             let _ = client.shutdown().await;
-
-            // Wait for socket to disappear
             let socket_path = get_socket_path()?;
             for _ in 0..10 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

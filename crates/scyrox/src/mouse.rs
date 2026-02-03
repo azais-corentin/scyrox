@@ -86,7 +86,6 @@ impl Mouse {
     pub async fn open() -> Result<Self> {
         debug!("searching for mouse device");
 
-        // Find the mouse device by searching for each known product ID
         let mut device_info = None;
         let mut mode = ConnectionMode::Wireless;
 
@@ -117,18 +116,12 @@ impl Mouse {
         debug!(?mode, "found mouse device");
 
         let device = device_info.open().await?;
-
-        // Detach kernel driver and claim interface
         let interface = device.detach_and_claim_interface(INTERFACE_NUM).await?;
-
-        // Create interrupt endpoint for responses
         let endpoint = interface.endpoint::<Interrupt, In>(INTERRUPT_EP_IN)?;
 
-        // Create channels
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (notification_tx, _) = broadcast::channel(NOTIFICATION_CHANNEL_CAPACITY);
 
-        // Spawn IO task
         let io_task = IoTask::new(
             interface,
             endpoint,
@@ -191,11 +184,7 @@ impl Mouse {
     #[instrument(skip(self))]
     pub async fn shutdown(self) -> Result<()> {
         info!("shutting down mouse connection");
-
-        // Drop the command channel to signal the IO task to exit
         drop(self.command_tx);
-
-        // Wait for the task to complete
         self.task_handle.await.map_err(|_| {
             error!("IO task panicked during shutdown");
             MouseError::TaskPanic
@@ -329,7 +318,6 @@ impl Mouse {
             });
         }
 
-        // Check response status byte (byte 2)
         Self::check_response_status(&response)?;
 
         // Per protocol spec section 5.8: verify address echo matches request
@@ -348,7 +336,6 @@ impl Mouse {
             // Note: We log a warning but don't fail, as some devices may not echo the address correctly
         }
 
-        // Verify length echo matches request
         let resp_length = response[5];
         if resp_length != length {
             trace!(
@@ -389,10 +376,7 @@ impl Mouse {
             "writing memory"
         );
 
-        // Send status command first (observed in all write sequences)
         self.send_status_sync().await?;
-
-        // Now send the write command
         let cmd = build_memory_write(offset, value);
         let response = self.send_command(&cmd).await?;
 
@@ -603,7 +587,6 @@ impl Mouse {
             });
         }
 
-        // Check response status byte
         Self::check_response_status(&response)?;
 
         let charging = response[7] == 0x01;
@@ -623,7 +606,6 @@ impl Mouse {
     pub async fn get_firmware_info(&self) -> Result<FirmwareInfo> {
         debug!("getting firmware information");
 
-        // Mouse firmware
         let mouse_cmd = build_mouse_firmware_cmd();
         let mouse_response = self.send_command(&mouse_cmd).await?;
 
@@ -937,7 +919,6 @@ impl Mouse {
 
         let base_address = OFFSET_MACROS + (slot as u16 * MACRO_SLOT_SIZE as u16);
 
-        // Read the entire macro slot in chunks of 10 bytes
         let mut data = [0u8; Macro::SLOT_SIZE];
         let mut offset = 0u16;
         while offset < Macro::SLOT_SIZE as u16 {
@@ -948,7 +929,6 @@ impl Mouse {
             offset += chunk_len as u16;
         }
 
-        // Decode the macro from wire format
         let macro_def = Macro::decode(&data)
             .ok_or_else(|| MouseError::InsufficientData { need: 32, got: 0 })?;
 
@@ -1127,10 +1107,8 @@ impl Mouse {
             );
         }
 
-        // Write to secondary location first (as observed in dumps)
         self.write_memory(OFFSET_SLEEP_TIMEOUT_SECONDARY, value)
             .await?;
-        // Then write to primary location
         self.write_memory(OFFSET_SLEEP_TIMEOUT, value).await?;
 
         info!(actual_seconds, "sleep timeout set successfully");
@@ -1242,10 +1220,7 @@ impl Mouse {
         let address = OFFSET_DPI_VALUES + (stage as u16 * 4);
         let encoded = encode_dpi(dpi);
 
-        // Send status sync first
         self.send_status_sync().await?;
-
-        // Write the 4-byte DPI data
         let cmd = build_flash_write(address, &encoded);
         let response = self.send_command(&cmd).await?;
 
@@ -1278,10 +1253,7 @@ impl Mouse {
         let address = OFFSET_DPI_COLORS + (stage as u16 * 4);
         let data = [color[0], color[1], color[2], 0x00];
 
-        // Send status sync first
         self.send_status_sync().await?;
-
-        // Write the 4-byte color data
         let cmd = build_flash_write(address, &data);
         let response = self.send_command(&cmd).await?;
 
@@ -1329,10 +1301,7 @@ impl Mouse {
     pub async fn set_light_settings(&self, settings: &LightSettings) -> Result<()> {
         info!(?settings, "setting light settings");
 
-        // Send status sync first
         self.send_status_sync().await?;
-
-        // Write light mode, color, speed, brightness (7 bytes at OFFSET_LIGHT_SETTINGS)
         let data = [
             settings.mode.into(),
             settings.color[0],
@@ -1360,7 +1329,6 @@ impl Mouse {
             });
         }
 
-        // Write on/off state
         self.write_memory(
             OFFSET_LIGHT_STATE,
             if settings.enabled { 0x01 } else { 0x00 },
@@ -1406,10 +1374,7 @@ impl Mouse {
         let address = OFFSET_KEY_FUNCTIONS + (key_index as u16 * 4);
         let encoded = function.encode();
 
-        // Send status sync first
         self.send_status_sync().await?;
-
-        // Write the 4-byte key function data
         let cmd = build_flash_write(address, &encoded);
         let response = self.send_command(&cmd).await?;
 
@@ -1461,10 +1426,7 @@ impl Mouse {
         let address = OFFSET_SHORTCUT_KEYS + (slot as u16 * SHORTCUT_KEY_SLOT_SIZE as u16);
         let encoded = shortcut.encode();
 
-        // Send status sync first
         self.send_status_sync().await?;
-
-        // Write in chunks of 10 bytes
         let cmd1 = build_flash_write(address, &encoded[0..10]);
         self.send_command(&cmd1).await?;
 
@@ -1491,10 +1453,7 @@ impl Mouse {
 
         let base_address = OFFSET_MACROS + (slot as u16 * MACRO_SLOT_SIZE as u16);
 
-        // Encode the macro to wire format
         let encoded = macro_def.encode();
-
-        // Send status sync first
         self.send_status_sync().await?;
 
         // Write in chunks of 10 bytes (max per flash write command)
@@ -1523,9 +1482,7 @@ impl Mouse {
         }
         info!(profile_index, "setting current profile");
 
-        // Send status sync first
         self.send_status_sync().await?;
-
         let cmd = build_set_current_config_cmd(profile_index);
         let response = self.send_command(&cmd).await?;
 
@@ -1554,10 +1511,7 @@ impl Mouse {
     #[instrument(skip(self))]
     pub async fn factory_reset(&self) -> Result<()> {
         info!("performing factory reset");
-
-        // Send status sync first
         self.send_status_sync().await?;
-
         let cmd = build_clear_setting_cmd();
         let response = self.send_command(&cmd).await?;
 
@@ -1585,10 +1539,7 @@ impl Mouse {
     #[instrument(skip(self))]
     pub async fn enter_pairing_mode(&self) -> Result<()> {
         info!("entering pairing mode");
-
-        // Send status sync first
         self.send_status_sync().await?;
-
         let cmd = build_dongle_enter_pair_cmd();
         let response = self.send_command(&cmd).await?;
 

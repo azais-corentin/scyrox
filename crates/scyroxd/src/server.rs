@@ -100,11 +100,9 @@ impl ScyroxService {
             client_event_tx,
         };
 
-        // Try to open the mouse, but don't fail if not connected
         match Mouse::open().await {
             Ok(m) => {
                 info!("Mouse connected");
-                // Subscribe to notifications and spawn forwarder
                 service.spawn_notification_forwarder(&m);
                 *service.mouse.lock().await = Some(m);
             }
@@ -123,7 +121,6 @@ impl ScyroxService {
             match Mouse::open().await {
                 Ok(m) => {
                     info!("Mouse reconnected");
-                    // Subscribe to notifications and spawn forwarder
                     self.spawn_notification_forwarder(&m);
                     *guard = Some(m);
                 }
@@ -230,17 +227,13 @@ impl ScyroxService {
                     DeviceEvent::Connected { mode } => {
                         info!(?mode, "device connected");
 
-                        // Try to open the mouse
                         match Mouse::open().await {
                             Ok(m) => {
-                                // Subscribe to notifications and spawn forwarder
                                 spawn_notification_forwarder(&m, client_event_tx.clone());
-
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
                                 info!("mouse connection established");
 
-                                // Broadcast connection event
                                 let proto_mode = match mode {
                                     scyrox::ConnectionMode::Wired => ConnectionMode::Wired,
                                     scyrox::ConnectionMode::Wireless => ConnectionMode::Wireless,
@@ -269,8 +262,6 @@ impl ScyroxService {
                     }
                     DeviceEvent::Disconnected => {
                         info!("device disconnected");
-
-                        // Invalidate mouse connection
                         {
                             let mut guard = mouse.lock().await;
                             if guard.is_some() {
@@ -279,7 +270,6 @@ impl ScyroxService {
                             }
                         }
 
-                        // Broadcast disconnection event
                         let _ = client_event_tx.send(Event {
                             event: Some(event::Event::ConnectionChange(ConnectionChange {
                                 connected: false,
@@ -289,24 +279,18 @@ impl ScyroxService {
                     }
                     DeviceEvent::ModeChanged { from, to } => {
                         info!(?from, ?to, "connection mode changed");
-
-                        // Drop the old connection
                         {
                             let mut guard = mouse.lock().await;
                             *guard = None;
                         }
 
-                        // Open new connection
                         match Mouse::open().await {
                             Ok(m) => {
-                                // Subscribe to notifications and spawn forwarder
                                 spawn_notification_forwarder(&m, client_event_tx.clone());
-
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
                                 info!(?to, "mouse reconnected in new mode");
 
-                                // Broadcast mode change as connection event
                                 let proto_mode = match to {
                                     scyrox::ConnectionMode::Wired => ConnectionMode::Wired,
                                     scyrox::ConnectionMode::Wireless => ConnectionMode::Wireless,
