@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::Serialize;
+
 /// Polling rate options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PollingRate {
@@ -99,6 +101,12 @@ impl fmt::Display for PollingRate {
     }
 }
 
+impl Serialize for PollingRate {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u16(self.to_hz())
+    }
+}
+
 /// Lift-off distance options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiftOffDistance {
@@ -168,6 +176,12 @@ impl LiftOffDistance {
 impl fmt::Display for LiftOffDistance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}mm", self.to_mm())
+    }
+}
+
+impl Serialize for LiftOffDistance {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f32(self.to_mm())
     }
 }
 
@@ -270,7 +284,7 @@ impl fmt::Display for ConnectionType {
 }
 
 /// Full mouse configuration snapshot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MouseConfig {
     /// Polling rate in Hz.
     pub polling_rate: PollingRate,
@@ -301,7 +315,7 @@ pub struct MouseConfig {
 }
 
 /// Battery status information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BatteryStatus {
     /// Battery voltage in millivolts.
     pub voltage_mv: u16,
@@ -312,7 +326,7 @@ pub struct BatteryStatus {
 }
 
 /// Firmware version information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FirmwareInfo {
     /// Mouse firmware version string (e.g., "v2.22").
     pub mouse_version: String,
@@ -896,7 +910,8 @@ impl Default for DpiEffectSettings {
 }
 
 /// Sensor mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum SensorMode {
     /// Low power mode.
@@ -991,6 +1006,12 @@ impl fmt::Display for SleepTime {
             SleepTime::Min10 => write!(f, "10 minutes"),
             SleepTime::Min30 => write!(f, "30 minutes"),
         }
+    }
+}
+
+impl Serialize for SleepTime {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u16(self.to_seconds())
     }
 }
 

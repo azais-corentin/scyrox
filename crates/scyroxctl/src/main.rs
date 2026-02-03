@@ -12,27 +12,29 @@ mod cli;
 mod client;
 mod commands;
 mod direct;
+mod output;
 
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Parser;
 use tonic::Status;
-use tracing::debug;
+use tracing::{debug, error, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::backend::Backend;
 use crate::cli::{Cli, Commands};
 use crate::client::DaemonClient;
 use crate::direct::DirectBackend;
+use crate::output::Output;
 
 fn main() -> ExitCode {
     if let Err(e) = run() {
         // Extract clean message from tonic Status errors
         if let Some(status) = e.downcast_ref::<Status>() {
-            eprintln!("Error: {}", status.message());
+            error!("{}", status.message());
         } else {
-            eprintln!("Error: {}", e);
+            error!("{}", e);
         }
         return ExitCode::FAILURE;
     }
@@ -59,11 +61,17 @@ async fn run() -> Result<()> {
             .add_directive("scyroxctl=trace".parse()?)
             .add_directive("scyrox=trace".parse()?),
     };
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
+
+    // Create output handler
+    let output = Output::new(cli.format);
 
     // Handle daemon subcommand separately (doesn't need a backend)
     if let Commands::Daemon(cmd) = &cli.command {
-        return commands::daemon::run(cmd).await;
+        return commands::daemon::run(cmd, &output).await;
     }
 
     // Get the appropriate backend
@@ -71,10 +79,10 @@ async fn run() -> Result<()> {
 
     // Execute the command
     match &cli.command {
-        Commands::Get(cmd) => commands::get::run(&*backend, cmd).await,
-        Commands::Set(cmd) => commands::set::run(&*backend, cmd).await,
-        Commands::Profile(cmd) => commands::profile::run(&*backend, cmd).await,
-        Commands::Status => commands::status::run(&*backend).await,
+        Commands::Get(cmd) => commands::get::run(&*backend, cmd, &output).await,
+        Commands::Set(cmd) => commands::set::run(&*backend, cmd, &output).await,
+        Commands::Profile(cmd) => commands::profile::run(&*backend, cmd, &output).await,
+        Commands::Status => commands::status::run(&*backend, &output).await,
         Commands::Daemon(_) => unreachable!(),
     }
 }
@@ -95,7 +103,7 @@ async fn get_backend(cli: &Cli) -> Result<Box<dyn Backend>> {
         }
         Err(e) => {
             debug!("Daemon not available: {}", e);
-            eprintln!("Note: Daemon not running, using direct USB access");
+            warn!("Daemon not running, using direct USB access");
             Ok(Box::new(DirectBackend::new().await?))
         }
     }

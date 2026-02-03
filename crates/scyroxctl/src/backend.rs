@@ -3,6 +3,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate};
+use serde::Serialize;
 
 /// Unified interface for mouse operations.
 ///
@@ -38,7 +39,7 @@ pub trait Backend: Send + Sync {
 }
 
 /// Profile information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProfileInfo {
     pub id: String,
     pub name: String,
@@ -47,7 +48,7 @@ pub struct ProfileInfo {
 }
 
 /// Daemon status information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DaemonInfo {
     pub version: String,
     pub uptime_seconds: u64,

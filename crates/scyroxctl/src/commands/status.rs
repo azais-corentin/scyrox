@@ -3,49 +3,37 @@
 use anyhow::Result;
 
 use crate::backend::Backend;
+use crate::output::{Output, StatusOutput};
 
-pub async fn run(backend: &dyn Backend) -> Result<()> {
-    // Device status
+pub async fn run(backend: &dyn Backend, output: &Output) -> Result<()> {
     let connected = backend.is_connected().await;
-    println!("Device Status:");
-    println!("  Connected: {}", if connected { "Yes" } else { "No" });
 
-    if connected {
-        // Show current config
-        if let Ok(config) = backend.get_config().await {
-            println!("  Polling Rate: {}", config.polling_rate);
-        }
+    let polling_rate = if connected {
+        backend
+            .get_config()
+            .await
+            .ok()
+            .map(|c| c.polling_rate.to_string())
+    } else {
+        None
+    };
 
-        // Show battery
-        if let Ok(battery) = backend.get_battery().await {
-            println!(
-                "  Battery: {}% ({} mV)",
-                battery.percentage, battery.voltage_mv
-            );
-        }
-    }
+    let battery = if connected {
+        backend.get_battery().await.ok()
+    } else {
+        None
+    };
 
-    // Daemon status (if available)
-    println!();
-    println!("Daemon Status:");
-    match backend.get_daemon_info().await? {
-        Some(info) => {
-            println!("  Running: Yes");
-            println!("  Version: {}", info.version);
-            println!("  Uptime:  {} seconds", info.uptime_seconds);
-            println!(
-                "  Device:  {}",
-                if info.connected {
-                    "Connected"
-                } else {
-                    "Disconnected"
-                }
-            );
-        }
-        None => {
-            println!("  Running: No (using direct USB access)");
-        }
-    }
+    let daemon = backend.get_daemon_info().await?;
+
+    let status = StatusOutput {
+        connected,
+        polling_rate,
+        battery,
+        daemon,
+    };
+
+    output.print_status(&status);
 
     Ok(())
 }

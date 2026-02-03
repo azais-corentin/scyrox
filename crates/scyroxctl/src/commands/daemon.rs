@@ -5,32 +5,34 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
+use serde::Serialize;
 
-use crate::cli::{DaemonAction, DaemonCommand};
+use crate::cli::{DaemonAction, DaemonCommand, OutputFormat};
 use crate::client::DaemonClient;
+use crate::output::Output;
 
 /// Default socket name.
 const SOCKET_NAME: &str = "scyroxd.sock";
 
-pub async fn run(cmd: &DaemonCommand) -> Result<()> {
+pub async fn run(cmd: &DaemonCommand, output: &Output) -> Result<()> {
     match &cmd.action {
-        DaemonAction::Start { foreground } => start_daemon(*foreground).await,
-        DaemonAction::Stop => stop_daemon().await,
-        DaemonAction::Status => show_status().await,
-        DaemonAction::Restart => restart_daemon().await,
+        DaemonAction::Start { foreground } => start_daemon(*foreground, output).await,
+        DaemonAction::Stop => stop_daemon(output).await,
+        DaemonAction::Status => show_status(output).await,
+        DaemonAction::Restart => restart_daemon(output).await,
     }
 }
 
-async fn start_daemon(foreground: bool) -> Result<()> {
+async fn start_daemon(foreground: bool, output: &Output) -> Result<()> {
     // Check if already running
     if DaemonClient::connect().await.is_ok() {
-        println!("Daemon is already running");
+        output.print_success("Daemon is already running");
         return Ok(());
     }
 
     if foreground {
         // Run in foreground - just exec scyroxd
-        println!("Starting daemon in foreground...");
+        output.print_success("Starting daemon in foreground...");
         let status = Command::new("scyroxd")
             .status()
             .context("Failed to start scyroxd")?;
@@ -40,7 +42,7 @@ async fn start_daemon(foreground: bool) -> Result<()> {
         }
     } else {
         // Daemonize
-        println!("Starting daemon...");
+        output.print_success("Starting daemon...");
 
         // Use setsid to create a new session
         let child = Command::new("setsid")
@@ -52,25 +54,25 @@ async fn start_daemon(foreground: bool) -> Result<()> {
             })
             .context("Failed to start scyroxd")?;
 
-        println!("Started daemon (PID: {})", child.id());
+        output.print_success(&format!("Started daemon (PID: {})", child.id()));
 
         // Wait a moment and verify it's running
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         if DaemonClient::connect().await.is_ok() {
-            println!("Daemon is now running");
+            output.print_success("Daemon is now running");
         } else {
-            println!("Warning: Could not verify daemon is running");
+            output.print_success("Warning: Could not verify daemon is running");
         }
     }
 
     Ok(())
 }
 
-async fn stop_daemon() -> Result<()> {
+async fn stop_daemon(output: &Output) -> Result<()> {
     match DaemonClient::connect().await {
         Ok(client) => {
-            println!("Stopping daemon...");
+            output.print_success("Stopping daemon...");
 
             // Send shutdown command
             let _ = client.shutdown().await;
@@ -84,48 +86,88 @@ async fn stop_daemon() -> Result<()> {
                 }
             }
 
-            println!("Daemon stopped");
+            output.print_success("Daemon stopped");
             Ok(())
         }
         Err(_) => {
-            println!("Daemon is not running");
+            output.print_success("Daemon is not running");
             Ok(())
         }
     }
 }
 
-async fn show_status() -> Result<()> {
+/// Daemon status output for JSON serialization.
+#[derive(Debug, Clone, Serialize)]
+struct DaemonStatusOutput {
+    running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uptime_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_connected: Option<bool>,
+}
+
+async fn show_status(output: &Output) -> Result<()> {
     match DaemonClient::connect().await {
         Ok(client) => {
             let info = client.get_info().await?;
 
-            println!("Daemon Status: Running");
-            println!("  Version: {}", info.version);
-            println!("  Uptime:  {} seconds", info.uptime_seconds);
+            let status = DaemonStatusOutput {
+                running: true,
+                version: Some(info.version.clone()),
+                uptime_seconds: Some(info.uptime_seconds),
+                device_connected: info.device_status.map(|d| d.connected),
+            };
 
-            if let Some(device) = info.device_status {
-                println!(
-                    "  Device:  {}",
-                    if device.connected {
-                        "Connected"
-                    } else {
-                        "Disconnected"
+            match output.format() {
+                OutputFormat::Text => {
+                    println!("Daemon Status: Running");
+                    println!("  Version: {}", info.version);
+                    println!("  Uptime:  {} seconds", info.uptime_seconds);
+
+                    if let Some(device) = info.device_status {
+                        println!(
+                            "  Device:  {}",
+                            if device.connected {
+                                "Connected"
+                            } else {
+                                "Disconnected"
+                            }
+                        );
                     }
-                );
+                }
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string(&status).unwrap_or_default());
+                }
             }
         }
         Err(_) => {
-            println!("Daemon Status: Not running");
+            let status = DaemonStatusOutput {
+                running: false,
+                version: None,
+                uptime_seconds: None,
+                device_connected: None,
+            };
+
+            match output.format() {
+                OutputFormat::Text => {
+                    println!("Daemon Status: Not running");
+                }
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string(&status).unwrap_or_default());
+                }
+            }
         }
     }
 
     Ok(())
 }
 
-async fn restart_daemon() -> Result<()> {
-    stop_daemon().await?;
+async fn restart_daemon(output: &Output) -> Result<()> {
+    stop_daemon(output).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    start_daemon(false).await
+    start_daemon(false, output).await
 }
 
 /// Get the socket path.

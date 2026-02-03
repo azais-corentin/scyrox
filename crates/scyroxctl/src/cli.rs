@@ -2,6 +2,16 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+/// Output format for command results.
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    /// Human-readable text output
+    #[default]
+    Text,
+    /// JSON output
+    Json,
+}
+
 /// Scyrox mouse configuration tool.
 #[derive(Parser)]
 #[command(name = "scyroxctl")]
@@ -10,6 +20,10 @@ pub struct Cli {
     /// Use direct USB access instead of connecting to daemon
     #[arg(short, long, global = true)]
     pub direct: bool,
+
+    /// Output format
+    #[arg(short = 'f', long, global = true, default_value = "text")]
+    pub format: OutputFormat,
 
     /// Increase verbosity (-v for debug, -vv for trace)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]

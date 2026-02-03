@@ -4,88 +4,51 @@ use anyhow::Result;
 
 use crate::backend::Backend;
 use crate::cli::{GetCommand, GetWhat};
+use crate::output::Output;
 
-pub async fn run(backend: &dyn Backend, cmd: &GetCommand) -> Result<()> {
+pub async fn run(backend: &dyn Backend, cmd: &GetCommand, output: &Output) -> Result<()> {
     match &cmd.what {
-        GetWhat::Config => get_config(backend).await,
-        GetWhat::Battery => get_battery(backend).await,
-        GetWhat::Firmware => get_firmware(backend).await,
-        GetWhat::PollingRate => get_polling_rate(backend).await,
-        GetWhat::Lod => get_lod(backend).await,
-        GetWhat::SleepTimeout => get_sleep_timeout(backend).await,
+        GetWhat::Config => get_config(backend, output).await,
+        GetWhat::Battery => get_battery(backend, output).await,
+        GetWhat::Firmware => get_firmware(backend, output).await,
+        GetWhat::PollingRate => get_polling_rate(backend, output).await,
+        GetWhat::Lod => get_lod(backend, output).await,
+        GetWhat::SleepTimeout => get_sleep_timeout(backend, output).await,
     }
 }
 
-async fn get_config(backend: &dyn Backend) -> Result<()> {
+async fn get_config(backend: &dyn Backend, output: &Output) -> Result<()> {
     let config = backend.get_config().await?;
-
-    println!("Configuration:");
-    println!("  Polling Rate:      {}", config.polling_rate);
-    println!("  Lift-Off Distance: {}", config.lift_off_distance);
-    println!(
-        "  Sleep Timeout:     {} seconds",
-        config.sleep_timeout_seconds
-    );
-    println!(
-        "  Angle Snapping:    {}",
-        if config.angle_snapping { "On" } else { "Off" }
-    );
-    println!(
-        "  Ripple Control:    {}",
-        if config.ripple_control { "On" } else { "Off" }
-    );
-    println!(
-        "  High Speed Mode:   {}",
-        if config.high_speed_mode { "On" } else { "Off" }
-    );
-    println!(
-        "  Long Distance:     {}",
-        if config.long_distance_mode {
-            "On"
-        } else {
-            "Off"
-        }
-    );
-
+    output.print_config(&config);
     Ok(())
 }
 
-async fn get_battery(backend: &dyn Backend) -> Result<()> {
+async fn get_battery(backend: &dyn Backend, output: &Output) -> Result<()> {
     let battery = backend.get_battery().await?;
-
-    println!("Battery:");
-    println!("  Voltage:    {} mV", battery.voltage_mv);
-    println!("  Percentage: {}%", battery.percentage);
-
+    output.print_battery(&battery);
     Ok(())
 }
 
-async fn get_firmware(backend: &dyn Backend) -> Result<()> {
+async fn get_firmware(backend: &dyn Backend, output: &Output) -> Result<()> {
     let firmware = backend.get_firmware().await?;
-
-    println!("Firmware:");
-    println!("  Mouse:    {}", firmware.mouse_version);
-    if let Some(receiver) = &firmware.receiver_version {
-        println!("  Receiver: {}", receiver);
-    }
-
+    output.print_firmware(&firmware);
     Ok(())
 }
 
-async fn get_polling_rate(backend: &dyn Backend) -> Result<()> {
+async fn get_polling_rate(backend: &dyn Backend, output: &Output) -> Result<()> {
     let config = backend.get_config().await?;
-    println!("{}", config.polling_rate);
+    output.print_value(&config.polling_rate);
     Ok(())
 }
 
-async fn get_lod(backend: &dyn Backend) -> Result<()> {
+async fn get_lod(backend: &dyn Backend, output: &Output) -> Result<()> {
     let config = backend.get_config().await?;
-    println!("{}", config.lift_off_distance);
+    output.print_value(&config.lift_off_distance);
     Ok(())
 }
 
-async fn get_sleep_timeout(backend: &dyn Backend) -> Result<()> {
+async fn get_sleep_timeout(backend: &dyn Backend, output: &Output) -> Result<()> {
     let config = backend.get_config().await?;
-    println!("{}s", config.sleep_timeout_seconds);
+    output.print_value(&format!("{}s", config.sleep_timeout_seconds));
     Ok(())
 }
