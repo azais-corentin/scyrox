@@ -157,7 +157,7 @@ impl LiftOffDistance {
 
 impl fmt::Display for LiftOffDistance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}mm", self.to_mm())
+        write!(f, "{:.1}mm", self.to_mm())
     }
 }
 
