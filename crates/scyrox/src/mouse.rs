@@ -1,6 +1,6 @@
 //! Mouse communication and configuration API.
 
-use nusb::transfer::{In, Interrupt};
+use hidapi::HidApi;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -39,7 +39,7 @@ const NOTIFICATION_CHANNEL_CAPACITY: usize = 32;
 
 /// Mouse device handle for async communication.
 ///
-/// The `Mouse` struct owns a background IO task that handles all USB communication.
+/// The `Mouse` struct owns a background IO task that handles all HID communication.
 /// When dropped, the IO task will be signaled to shut down via channel closure.
 /// For explicit control over shutdown, use the [`shutdown`](Self::shutdown) method.
 pub struct Mouse {
@@ -80,32 +80,35 @@ macro_rules! impl_bool_setting {
 impl Mouse {
     /// Open a connection to the mouse.
     ///
-    /// This spawns a background IO task that handles USB communication.
-    /// The task runs until the device disconnects or the Mouse handle is dropped.
+    /// This spawns a background IO task on tokio's blocking thread pool that
+    /// handles all HID communication. The task runs until the device disconnects
+    /// or the Mouse handle is dropped.
     #[instrument]
     pub async fn open() -> Result<Self> {
         debug!("searching for mouse device");
 
-        let mut device_info = None;
+        let api = HidApi::new()?;
+
+        let mut found_info = None;
         let mut mode = ConnectionMode::Wireless;
 
         for pid in PRODUCT_IDS {
-            if let Ok(mut devices) = nusb::list_devices().await {
-                if let Some(dev) =
-                    devices.find(|d| d.vendor_id() == VENDOR_ID && d.product_id() == pid)
-                {
-                    mode = match pid {
-                        PID_WIRED => ConnectionMode::Wired,
-                        PID_WIRELESS_4K | PID_WIRELESS_STD => ConnectionMode::Wireless,
-                        _ => ConnectionMode::Wireless,
-                    };
-                    device_info = Some(dev);
-                    break;
-                }
+            if let Some(dev) = api.device_list().find(|d| {
+                d.vendor_id() == VENDOR_ID
+                    && d.product_id() == pid
+                    && d.interface_number() == INTERFACE_NUM as i32
+            }) {
+                mode = match pid {
+                    PID_WIRED => ConnectionMode::Wired,
+                    PID_WIRELESS_4K | PID_WIRELESS_STD => ConnectionMode::Wireless,
+                    _ => ConnectionMode::Wireless,
+                };
+                found_info = Some(dev.path().to_owned());
+                break;
             }
         }
 
-        let device_info = device_info.ok_or_else(|| {
+        let device_path = found_info.ok_or_else(|| {
             error!(vid = VENDOR_ID, ?PRODUCT_IDS, "mouse device not found");
             MouseError::NotFound {
                 vid: VENDOR_ID,
@@ -115,21 +118,13 @@ impl Mouse {
 
         debug!(?mode, "found mouse device");
 
-        let device = device_info.open().await?;
-        let interface = device.detach_and_claim_interface(INTERFACE_NUM).await?;
-        let endpoint = interface.endpoint::<Interrupt, In>(INTERRUPT_EP_IN)?;
+        let device = api.open_path(&device_path)?;
 
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (notification_tx, _) = broadcast::channel(NOTIFICATION_CHANNEL_CAPACITY);
 
-        let io_task = IoTask::new(
-            interface,
-            endpoint,
-            mode,
-            command_rx,
-            notification_tx.clone(),
-        );
-        let task_handle = tokio::spawn(io_task.run());
+        let io_task = IoTask::new(device, mode, command_rx, notification_tx.clone());
+        let task_handle = tokio::task::spawn_blocking(move || io_task.run());
 
         info!(?mode, "mouse connection established");
 
@@ -844,8 +839,8 @@ impl Mouse {
         debug!("getting all key functions");
         let mut functions = [KeyFunction::default(); KEY_FUNCTION_COUNT];
 
-        for i in 0..KEY_FUNCTION_COUNT {
-            functions[i] = self.get_key_function(i as u8).await?;
+        for (i, function) in functions.iter_mut().enumerate() {
+            *function = self.get_key_function(i as u8).await?;
         }
 
         debug!("all key functions retrieved");
@@ -1212,7 +1207,7 @@ impl Mouse {
         if stage >= 8 {
             return Err(MouseError::InvalidDpiStage(stage));
         }
-        if dpi < DPI_MIN || dpi > DPI_MAX {
+        if !(DPI_MIN..=DPI_MAX).contains(&dpi) {
             return Err(MouseError::InvalidDpiValue(dpi));
         }
         info!(stage, dpi, "setting DPI value");

@@ -9,13 +9,9 @@ pub enum MouseError {
     #[error("Mouse not found")]
     NotFound { vid: u16, pids: Vec<u16> },
 
-    /// USB communication error.
-    #[error("USB error: {0}")]
-    Usb(#[from] nusb::Error),
-
-    /// USB transfer error.
-    #[error("USB transfer error: {0}")]
-    Transfer(nusb::transfer::TransferError),
+    /// HID communication error.
+    #[error("HID error: {0}")]
+    Hid(#[from] hidapi::HidError),
 
     /// Invalid polling rate byte value.
     #[error("Invalid polling rate value: 0x{0:02x}")]

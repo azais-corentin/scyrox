@@ -176,8 +176,7 @@ impl ScyroxService {
             | MouseError::InvalidDebounceTime(_)
             | MouseError::InvalidProfile(_) => Status::invalid_argument(message),
             // Protocol/communication errors → internal
-            MouseError::Usb(_)
-            | MouseError::Transfer(_)
+            MouseError::Hid(_)
             | MouseError::Timeout
             | MouseError::UnexpectedResponse { .. }
             | MouseError::InsufficientData { .. }
@@ -905,7 +904,7 @@ fn profile_config_to_mouse_config(config: &ProfileConfig) -> Result<scyrox::Mous
     })?;
 
     let lift_off_distance = scyrox::LiftOffDistance::from_mm(config.lift_off_distance_mm)
-        .unwrap_or_else(|| {
+        .unwrap_or(
             // Fall back to range-based matching for approximate values
             if config.lift_off_distance_mm <= 0.85 {
                 scyrox::LiftOffDistance::Low
@@ -913,8 +912,8 @@ fn profile_config_to_mouse_config(config: &ProfileConfig) -> Result<scyrox::Mous
                 scyrox::LiftOffDistance::Medium
             } else {
                 scyrox::LiftOffDistance::High
-            }
-        });
+            },
+        );
 
     Ok(scyrox::MouseConfig {
         polling_rate,

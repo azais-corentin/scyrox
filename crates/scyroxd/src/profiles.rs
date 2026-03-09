@@ -166,6 +166,7 @@ impl ProfileStore {
     }
 
     /// Get the default profile, if any.
+    #[expect(dead_code)]
     pub async fn get_default(&self) -> Result<Option<Profile>> {
         let profiles = self.list().await?;
         Ok(profiles.into_iter().find(|p| p.is_default))
@@ -182,10 +183,10 @@ impl ProfileStore {
         let mut profile: Profile = toml::from_str(&contents)?;
 
         // Set ID from filename if not present
-        if profile.id.is_empty() {
-            if let Some(stem) = path.file_stem() {
-                profile.id = stem.to_string_lossy().into_owned();
-            }
+        if profile.id.is_empty()
+            && let Some(stem) = path.file_stem()
+        {
+            profile.id = stem.to_string_lossy().into_owned();
         }
 
         Ok(profile)

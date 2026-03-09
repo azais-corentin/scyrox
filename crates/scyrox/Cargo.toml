@@ -7,8 +7,8 @@ description = "Core library for Scyrox mouse USB/HID communication"
 [dependencies]
 directories.workspace = true
 hex.workspace = true
+hidapi.workspace = true
 num_enum = "0.7"
-nusb.workspace = true
 serde.workspace = true
 strum = { version = "0.26", features = ["derive"] }
 thiserror.workspace = true

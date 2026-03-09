@@ -932,7 +932,7 @@ impl MacroCycleMode {
             253 => MacroCycleMode::UntilKeyPressedAgain,
             254 => MacroCycleMode::UntilKeyReleased,
             255 => MacroCycleMode::UntilAnyKeyPressed,
-            n => MacroCycleMode::Count(n.max(1).min(250)),
+            n => MacroCycleMode::Count(n.clamp(1, 250)),
         }
     }
 }
@@ -1028,16 +1028,10 @@ impl ShortcutKeyEvent {
 }
 
 /// Shortcut key definition (up to 10 events).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ShortcutKey {
     /// Events in the shortcut (both key down and key up).
     pub events: Vec<ShortcutKeyEvent>,
-}
-
-impl Default for ShortcutKey {
-    fn default() -> Self {
-        Self { events: Vec::new() }
-    }
 }
 
 impl ShortcutKey {

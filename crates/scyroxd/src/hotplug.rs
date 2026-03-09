@@ -1,11 +1,22 @@
-//! USB hotplug monitoring for device connect/disconnect events.
+//! HID device hotplug monitoring via periodic polling.
+//!
+//! Since hidapi does not provide event-driven hotplug notifications, this module
+//! polls `HidApi::refresh_devices()` at a regular interval to detect device
+//! connect/disconnect events.
 
-use nusb::DeviceId;
-use nusb::hotplug::HotplugEvent;
+use std::ffi::CString;
+use std::time::Duration;
+
+use hidapi::HidApi;
 use scyrox::{ConnectionMode, PID_WIRED, PID_WIRELESS_4K, PID_WIRELESS_STD, VENDOR_ID};
 use tokio::sync::broadcast;
-use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
+
+/// Polling interval for device enumeration.
+const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Interface number to filter on (must match scyrox::protocol::INTERFACE_NUM).
+const INTERFACE_NUM: i32 = 1;
 
 /// Events emitted when device connection state changes.
 #[derive(Debug, Clone)]
@@ -21,149 +32,141 @@ pub enum DeviceEvent {
     },
 }
 
-/// Tracks which Scyrox devices are physically connected.
+/// Tracks which Scyrox devices are physically connected by their HID device path.
 #[derive(Default, Debug)]
 struct DeviceState {
-    /// Device ID of connected wired device (PID_WIRED).
-    wired_id: Option<DeviceId>,
-    /// Device ID of connected wireless dongle (PID_WIRELESS_4K or PID_WIRELESS_STD).
-    wireless_id: Option<DeviceId>,
+    /// Device path of connected wired device (PID_WIRED).
+    wired_path: Option<CString>,
+    /// Device path of connected wireless dongle (PID_WIRELESS_4K or PID_WIRELESS_STD).
+    wireless_path: Option<CString>,
     /// Currently active connection mode (which interface is claimed).
     active_mode: Option<ConnectionMode>,
 }
 
 impl DeviceState {
-    /// Handle a device connection event.
-    fn handle_connected(&mut self, info: &nusb::DeviceInfo, tx: &broadcast::Sender<DeviceEvent>) {
-        if info.vendor_id() != VENDOR_ID {
-            return;
+    /// Scan the current device list and emit connect/disconnect/mode-change events
+    /// by comparing against previously known state.
+    fn update(&mut self, api: &HidApi, tx: &broadcast::Sender<DeviceEvent>) {
+        let mut current_wired: Option<CString> = None;
+        let mut current_wireless: Option<CString> = None;
+
+        for dev in api.device_list() {
+            if dev.vendor_id() != VENDOR_ID || dev.interface_number() != INTERFACE_NUM {
+                continue;
+            }
+
+            match dev.product_id() {
+                PID_WIRED => {
+                    current_wired = Some(dev.path().to_owned());
+                }
+                PID_WIRELESS_4K | PID_WIRELESS_STD => {
+                    current_wireless = Some(dev.path().to_owned());
+                }
+                _ => {}
+            }
         }
 
-        let pid = info.product_id();
-        let id = info.id();
+        // Detect wired connect/disconnect
+        let was_wired = self.wired_path.is_some();
+        let is_wired = current_wired.is_some();
 
-        match pid {
-            PID_WIRED => {
-                debug!(id = ?id, "wired device connected");
-                self.wired_id = Some(id);
+        // Detect wireless connect/disconnect
+        let was_wireless = self.wireless_path.is_some();
+        let is_wireless = current_wireless.is_some();
 
-                match self.active_mode {
-                    Some(ConnectionMode::Wireless) => {
-                        // Wireless -> Wired transition
-                        info!("mode change: Wireless -> Wired");
-                        self.active_mode = Some(ConnectionMode::Wired);
+        // Update stored paths
+        self.wired_path = current_wired;
+        self.wireless_path = current_wireless;
+
+        // Emit events based on state transitions
+        match (was_wired, is_wired, was_wireless, is_wireless) {
+            // Wired appeared
+            (false, true, _, _) => match self.active_mode {
+                Some(ConnectionMode::Wireless) => {
+                    info!("mode change: Wireless -> Wired");
+                    self.active_mode = Some(ConnectionMode::Wired);
+                    let _ = tx.send(DeviceEvent::ModeChanged {
+                        from: ConnectionMode::Wireless,
+                        to: ConnectionMode::Wired,
+                    });
+                }
+                None => {
+                    info!("device connected: Wired");
+                    self.active_mode = Some(ConnectionMode::Wired);
+                    let _ = tx.send(DeviceEvent::Connected {
+                        mode: ConnectionMode::Wired,
+                    });
+                }
+                Some(ConnectionMode::Wired) => {
+                    warn!("wired device connected but already in wired mode");
+                }
+            },
+            // Wired disappeared
+            (true, false, _, _) => {
+                if self.active_mode == Some(ConnectionMode::Wired) {
+                    if is_wireless {
+                        info!("mode change: Wired -> Wireless");
+                        self.active_mode = Some(ConnectionMode::Wireless);
                         let _ = tx.send(DeviceEvent::ModeChanged {
-                            from: ConnectionMode::Wireless,
-                            to: ConnectionMode::Wired,
+                            from: ConnectionMode::Wired,
+                            to: ConnectionMode::Wireless,
                         });
-                    }
-                    None => {
-                        // Fresh connection
-                        info!("device connected: Wired");
-                        self.active_mode = Some(ConnectionMode::Wired);
-                        let _ = tx.send(DeviceEvent::Connected {
-                            mode: ConnectionMode::Wired,
-                        });
-                    }
-                    Some(ConnectionMode::Wired) => {
-                        // Already in wired mode, shouldn't happen
-                        warn!("wired device connected but already in wired mode");
+                    } else {
+                        info!("device disconnected");
+                        self.active_mode = None;
+                        let _ = tx.send(DeviceEvent::Disconnected);
                     }
                 }
             }
-            PID_WIRELESS_4K | PID_WIRELESS_STD => {
-                debug!(id = ?id, pid = pid, "wireless dongle connected");
-                self.wireless_id = Some(id);
-
+            // Wireless appeared (wired unchanged)
+            (w, w2, false, true) if w == w2 => {
                 if self.active_mode.is_none() {
-                    // Fresh wireless connection
                     info!("device connected: Wireless");
                     self.active_mode = Some(ConnectionMode::Wireless);
                     let _ = tx.send(DeviceEvent::Connected {
                         mode: ConnectionMode::Wireless,
                     });
                 }
-                // If in wired mode, just store the ID for potential future fallback
-                // Don't switch modes - wired takes priority
+                // If in wired mode, just note the wireless dongle is available
             }
-            _ => {
-                debug!(pid = pid, "ignoring unknown Scyrox product");
-            }
-        }
-    }
-
-    /// Handle a device disconnection event.
-    fn handle_disconnected(&mut self, id: DeviceId, tx: &broadcast::Sender<DeviceEvent>) {
-        if self.wired_id == Some(id) {
-            debug!(id = ?id, "wired device disconnected");
-            self.wired_id = None;
-
-            if self.active_mode == Some(ConnectionMode::Wired) {
-                if self.wireless_id.is_some() {
-                    // Wired -> Wireless transition (wireless dongle was already connected)
-                    info!("mode change: Wired -> Wireless");
-                    self.active_mode = Some(ConnectionMode::Wireless);
-                    let _ = tx.send(DeviceEvent::ModeChanged {
-                        from: ConnectionMode::Wired,
-                        to: ConnectionMode::Wireless,
-                    });
-                } else {
-                    // No wireless fallback, device is truly disconnected
+            // Wireless disappeared (wired unchanged)
+            (w, w2, true, false) if w == w2 => {
+                if self.active_mode == Some(ConnectionMode::Wireless) && !is_wired {
                     info!("device disconnected");
                     self.active_mode = None;
                     let _ = tx.send(DeviceEvent::Disconnected);
                 }
             }
-        } else if self.wireless_id == Some(id) {
-            debug!(id = ?id, "wireless dongle disconnected");
-            self.wireless_id = None;
-
-            // Only emit disconnect if we were in wireless mode AND wired isn't connected
-            if self.active_mode == Some(ConnectionMode::Wireless) && self.wired_id.is_none() {
-                info!("device disconnected");
-                self.active_mode = None;
-                let _ = tx.send(DeviceEvent::Disconnected);
-            }
-            // If in wired mode, silently clear wireless ID (dongle unplugged while wired)
+            // No change or simultaneous change (rare)
+            _ => {}
         }
     }
 
-    /// Initialize state from currently connected devices.
-    async fn init_from_current_devices(&mut self) {
-        let devices = match nusb::list_devices().await {
-            Ok(iter) => iter,
-            Err(e) => {
-                warn!("failed to list devices during init: {}", e);
-                return;
-            }
-        };
-
-        for info in devices {
-            if info.vendor_id() != VENDOR_ID {
+    /// Initialize state from currently connected devices (no events emitted).
+    fn init_from_current_devices(&mut self, api: &HidApi) {
+        for dev in api.device_list() {
+            if dev.vendor_id() != VENDOR_ID || dev.interface_number() != INTERFACE_NUM {
                 continue;
             }
 
-            let pid = info.product_id();
-            let id = info.id();
-
-            match pid {
+            match dev.product_id() {
                 PID_WIRED => {
-                    debug!(id = ?id, "found existing wired device");
-                    self.wired_id = Some(id);
+                    debug!("found existing wired device");
+                    self.wired_path = Some(dev.path().to_owned());
                 }
                 PID_WIRELESS_4K | PID_WIRELESS_STD => {
-                    debug!(id = ?id, pid = pid, "found existing wireless dongle");
-                    self.wireless_id = Some(id);
+                    debug!(pid = dev.product_id(), "found existing wireless dongle");
+                    self.wireless_path = Some(dev.path().to_owned());
                 }
                 _ => {}
             }
         }
 
         // Determine initial mode (wired takes priority)
-        if self.wired_id.is_some() {
+        if self.wired_path.is_some() {
             self.active_mode = Some(ConnectionMode::Wired);
             debug!("initial mode: Wired");
-        } else if self.wireless_id.is_some() {
+        } else if self.wireless_path.is_some() {
             self.active_mode = Some(ConnectionMode::Wireless);
             debug!("initial mode: Wireless");
         } else {
@@ -172,7 +175,7 @@ impl DeviceState {
     }
 }
 
-/// Monitors USB hotplug events for Scyrox devices.
+/// Monitors HID device connect/disconnect events via polling.
 pub struct HotplugMonitor {
     /// Sender to keep channel alive.
     _event_tx: broadcast::Sender<DeviceEvent>,
@@ -198,35 +201,29 @@ impl HotplugMonitor {
 
     /// The main monitoring loop.
     async fn monitor_loop(tx: broadcast::Sender<DeviceEvent>) -> anyhow::Result<()> {
-        let watch = nusb::watch_devices()?;
+        let mut api = HidApi::new()?;
 
         // Initialize state from currently connected devices
         let mut state = DeviceState::default();
-        state.init_from_current_devices().await;
+        state.init_from_current_devices(&api);
 
         info!(
-            wired = state.wired_id.is_some(),
-            wireless = state.wireless_id.is_some(),
+            wired = state.wired_path.is_some(),
+            wireless = state.wireless_path.is_some(),
             mode = ?state.active_mode,
             "hotplug monitor started"
         );
 
-        // Pin the stream and process events
-        tokio::pin!(watch);
+        loop {
+            tokio::time::sleep(POLL_INTERVAL).await;
 
-        while let Some(event) = watch.next().await {
-            match event {
-                HotplugEvent::Connected(info) => {
-                    state.handle_connected(&info, &tx);
-                }
-                HotplugEvent::Disconnected(id) => {
-                    state.handle_disconnected(id, &tx);
-                }
+            if let Err(e) = api.refresh_devices() {
+                warn!("failed to refresh device list: {}", e);
+                continue;
             }
-        }
 
-        warn!("hotplug watch stream ended unexpectedly");
-        Ok(())
+            state.update(&api, &tx);
+        }
     }
 }
 
@@ -237,8 +234,8 @@ mod tests {
     #[test]
     fn test_device_state_default() {
         let state = DeviceState::default();
-        assert!(state.wired_id.is_none());
-        assert!(state.wireless_id.is_none());
+        assert!(state.wired_path.is_none());
+        assert!(state.wireless_path.is_none());
         assert!(state.active_mode.is_none());
     }
 }

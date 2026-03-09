@@ -29,8 +29,8 @@ tonic-prost-build = "0.14.5"
 # IPC
 interprocess = { version = "2.4.0", features = ["tokio"] }
 
-# USB
-nusb = { version = "0.2.2", features = ["tokio"] }
+# HID
+hidapi = "2.6"
 
 # CLI
 clap = { version = "4.5.60", features = ["derive"] }
