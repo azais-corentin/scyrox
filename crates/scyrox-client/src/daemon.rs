@@ -19,7 +19,7 @@ use scyrox_proto::{
     SetSleepTimeoutRequest,
 };
 
-use crate::backend::{Backend, DaemonInfo, ProfileInfo};
+use crate::{Backend, DaemonInfo, ProfileInfo};
 
 /// Client that connects to the scyroxd daemon via gRPC over IPC.
 pub struct DaemonClient {

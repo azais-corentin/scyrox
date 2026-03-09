@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 
-use crate::backend::Backend;
 use crate::cli::{ProfileAction, ProfileCommand};
 use crate::output::Output;
+use scyrox_client::Backend;
 
 pub async fn run(backend: &dyn Backend, cmd: &ProfileCommand, output: &Output) -> Result<()> {
     match &cmd.action {

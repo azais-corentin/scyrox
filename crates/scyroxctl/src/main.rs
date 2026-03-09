@@ -7,11 +7,8 @@
 //!
 //! The CLI automatically detects which mode to use, preferring the daemon if available.
 
-mod backend;
 mod cli;
-mod client;
 mod commands;
-mod direct;
 mod output;
 
 use std::process::ExitCode;
@@ -22,10 +19,9 @@ use tonic::Status;
 use tracing::{debug, error, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::backend::Backend;
+use scyrox_client::{Backend, DaemonClient, DirectBackend};
+
 use crate::cli::{Cli, Commands};
-use crate::client::DaemonClient;
-use crate::direct::DirectBackend;
 use crate::output::Output;
 
 fn main() -> ExitCode {

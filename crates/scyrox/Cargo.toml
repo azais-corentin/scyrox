@@ -8,9 +8,9 @@ description = "Core library for Scyrox mouse USB/HID communication"
 directories.workspace = true
 hex.workspace = true
 hidapi.workspace = true
-num_enum = "0.7"
+num_enum = "0.7.5"
 serde.workspace = true
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 
-use crate::backend::Backend;
 use crate::output::{Output, StatusOutput};
+use scyrox_client::Backend;
 
 pub async fn run(backend: &dyn Backend, output: &Output) -> Result<()> {
     let connected = backend.is_connected().await;

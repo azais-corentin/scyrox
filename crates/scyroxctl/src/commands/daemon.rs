@@ -8,8 +8,8 @@ use directories::ProjectDirs;
 use serde::Serialize;
 
 use crate::cli::{DaemonAction, DaemonCommand, OutputFormat};
-use crate::client::DaemonClient;
 use crate::output::Output;
+use scyrox_client::DaemonClient;
 
 /// Default socket name.
 const SOCKET_NAME: &str = "scyroxd.sock";

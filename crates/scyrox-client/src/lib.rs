@@ -1,14 +1,26 @@
-//! Backend trait for abstracting direct vs daemon access.
+//! Shared backend abstraction and daemon client for Scyrox mouse configuration.
+//!
+//! This crate provides the [`Backend`] trait for abstracting direct USB vs daemon
+//! communication, along with concrete implementations:
+//!
+//! - [`DaemonClient`]: connects to the scyroxd daemon via gRPC over Unix socket
+//! - [`DirectBackend`]: communicates directly with the mouse via USB
+
+mod daemon;
+mod direct;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate};
 use serde::Serialize;
 
+pub use daemon::DaemonClient;
+pub use direct::DirectBackend;
+
 /// Unified interface for mouse operations.
 ///
 /// This trait is implemented by both the direct USB backend and the daemon client,
-/// allowing the CLI commands to work with either.
+/// allowing consumers to work with either transparently.
 #[async_trait]
 pub trait Backend: Send + Sync {
     // Device info

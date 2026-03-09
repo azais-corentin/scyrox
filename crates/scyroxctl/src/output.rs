@@ -6,8 +6,8 @@
 use scyrox::{BatteryStatus, FirmwareInfo, MouseConfig};
 use serde::Serialize;
 
-use crate::backend::{DaemonInfo, ProfileInfo};
 use crate::cli::OutputFormat;
+use scyrox_client::{DaemonInfo, ProfileInfo};
 
 /// Print the common configuration fields with the given indent.
 fn print_config_fields(config: &MouseConfig, indent: &str) {

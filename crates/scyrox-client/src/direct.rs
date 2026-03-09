@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, Mouse, MouseConfig, PollingRate};
 use tokio::sync::Mutex;
 
-use crate::backend::{Backend, DaemonInfo, ProfileInfo};
+use crate::{Backend, DaemonInfo, ProfileInfo};
 
 const PROFILE_REQUIRES_DAEMON: &str =
     "Profile management requires the daemon. Start it with: scyroxctl daemon start";

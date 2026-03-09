@@ -10,6 +10,17 @@
   # https://devenv.sh/basics/
   env.GREET = "devenv";
 
+  env.LD_LIBRARY_PATH = lib.makeLibraryPath [
+    pkgs.libxkbcommon
+    pkgs.wayland
+    pkgs.libGL
+    pkgs.vulkan-loader
+    pkgs.xorg.libX11
+    pkgs.xorg.libXcursor
+    pkgs.xorg.libXi
+    pkgs.xorg.libXrandr
+  ];
+
   # https://devenv.sh/packages/
   packages = with pkgs; [
     pkg-config

@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 
-use crate::backend::Backend;
 use crate::cli::{GetCommand, GetWhat};
 use crate::output::Output;
+use scyrox_client::Backend;
 
 pub async fn run(backend: &dyn Backend, cmd: &GetCommand, output: &Output) -> Result<()> {
     match &cmd.what {

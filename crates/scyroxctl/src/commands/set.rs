@@ -3,9 +3,9 @@
 use anyhow::Result;
 use scyrox::{LiftOffDistance, PollingRate};
 
-use crate::backend::Backend;
 use crate::cli::{LodArg, PollingRateArg, SetCommand, SetWhat};
 use crate::output::Output;
+use scyrox_client::Backend;
 
 pub async fn run(backend: &dyn Backend, cmd: &SetCommand, output: &Output) -> Result<()> {
     match &cmd.what {
