@@ -2,8 +2,10 @@
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, Mouse, MouseConfig, PollingRate};
-use tokio::sync::Mutex;
+use scyrox::{
+    BatteryStatus, FirmwareInfo, LiftOffDistance, Mouse, MouseConfig, Notification, PollingRate,
+};
+use tokio::sync::{Mutex, broadcast};
 
 use crate::{Backend, DaemonInfo, ProfileInfo};
 
@@ -22,6 +24,12 @@ impl DirectBackend {
         Ok(Self {
             mouse: Mutex::new(mouse),
         })
+    }
+
+    /// Subscribe to device notifications (disconnect, settings changed).
+    pub async fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
+        let mouse = self.mouse.lock().await;
+        mouse.subscribe_notifications()
     }
 }
 

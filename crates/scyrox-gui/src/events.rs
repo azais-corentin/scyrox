@@ -11,14 +11,14 @@ use crate::notifications;
 
 /// Process a single proto event, dispatching notifications and returning
 /// an `AppEvent` for the iced application to handle.
-pub fn handle_event(event: Event) -> Option<AppEvent> {
+pub async fn handle_event(event: Event) -> Option<AppEvent> {
     match event {
         Event::ConnectionChange(change) => {
             debug!(connected = change.connected, "connection change event");
             if change.connected {
-                notifications::device_connected();
+                notifications::device_connected().await;
             } else {
-                notifications::device_disconnected();
+                notifications::device_disconnected().await;
             }
             Some(AppEvent::ConnectionChanged {
                 connected: change.connected,
@@ -36,12 +36,12 @@ pub fn handle_event(event: Event) -> Option<AppEvent> {
         Event::LowBatteryAlert(alert) => {
             let percentage = alert.percentage as u8;
             warn!(percentage, "low battery alert");
-            notifications::battery_low(percentage);
+            notifications::battery_low(percentage).await;
             Some(AppEvent::LowBattery { percentage })
         }
         Event::ProfileApplied(applied) => {
             debug!(profile = applied.profile_name, "profile applied event");
-            notifications::profile_applied(&applied.profile_name);
+            notifications::profile_applied(&applied.profile_name).await;
             Some(AppEvent::ProfileApplied {
                 name: applied.profile_name,
             })

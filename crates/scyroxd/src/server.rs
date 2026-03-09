@@ -2,7 +2,7 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use directories::ProjectDirs;
@@ -14,9 +14,9 @@ use tracing::{debug, info, instrument, warn};
 
 use scyrox::{Mouse, MouseError};
 use scyrox_proto::{
-    ApplyProfileRequest, BatteryStatus as ProtoBattery, ConnectionChange, ConnectionMode,
-    CreateProfileRequest, DaemonInfo, DeleteProfileRequest, DeviceStatus, Empty, Event,
-    FirmwareInfo as ProtoFirmware, GetProfileRequest, LiftOffDistance as ProtoLod,
+    ApplyProfileRequest, BatteryStatus as ProtoBattery, BatteryUpdate, ConnectionChange,
+    ConnectionMode, CreateProfileRequest, DaemonInfo, DeleteProfileRequest, DeviceStatus, Empty,
+    Event, FirmwareInfo as ProtoFirmware, GetProfileRequest, LiftOffDistance as ProtoLod,
     PollingRate as ProtoRate, Profile, ProfileApplied, ProfileList, Scyrox, SetBoolRequest,
     SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetPollingRateRequest,
     SetSleepTimeoutRequest, SetSleepTimeoutResponse, SettingsChanged, UpdateProfileRequest, event,
@@ -136,7 +136,7 @@ impl ScyroxService {
 
     /// Spawn a task to forward mouse notifications to clients.
     fn spawn_notification_forwarder(&self, mouse: &Mouse) {
-        spawn_notification_forwarder(mouse, self.client_event_tx.clone());
+        spawn_notification_forwarder(mouse, Arc::clone(&self.mouse), self.client_event_tx.clone());
     }
 
     /// Invalidate the current mouse connection.
@@ -228,7 +228,11 @@ impl ScyroxService {
 
                         match Mouse::open().await {
                             Ok(m) => {
-                                spawn_notification_forwarder(&m, client_event_tx.clone());
+                                spawn_notification_forwarder(
+                                    &m,
+                                    Arc::clone(&mouse),
+                                    client_event_tx.clone(),
+                                );
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
                                 info!("mouse connection established");
@@ -243,6 +247,13 @@ impl ScyroxService {
                                         mode: proto_mode as i32,
                                     })),
                                 });
+
+                                // Fetch and emit current battery on reconnect (with retry)
+                                drop(guard);
+                                spawn_battery_fetch_with_retry(
+                                    Arc::clone(&mouse),
+                                    client_event_tx.clone(),
+                                );
 
                                 // Auto-apply last active profile or default
                                 auto_apply_profile(
@@ -285,7 +296,11 @@ impl ScyroxService {
 
                         match Mouse::open().await {
                             Ok(m) => {
-                                spawn_notification_forwarder(&m, client_event_tx.clone());
+                                spawn_notification_forwarder(
+                                    &m,
+                                    Arc::clone(&mouse),
+                                    client_event_tx.clone(),
+                                );
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
                                 info!(?to, "mouse reconnected in new mode");
@@ -300,6 +315,13 @@ impl ScyroxService {
                                         mode: proto_mode as i32,
                                     })),
                                 });
+
+                                // Fetch and emit current battery on mode change (with retry)
+                                drop(guard);
+                                spawn_battery_fetch_with_retry(
+                                    Arc::clone(&mouse),
+                                    client_event_tx.clone(),
+                                );
 
                                 // Re-apply last active profile
                                 auto_apply_profile(
@@ -325,7 +347,11 @@ impl ScyroxService {
 }
 
 /// Spawn a task to forward mouse notifications to clients (static version for use in closures).
-fn spawn_notification_forwarder(mouse: &Mouse, client_event_tx: broadcast::Sender<Event>) {
+fn spawn_notification_forwarder(
+    mouse: &Mouse,
+    mouse_arc: Arc<Mutex<Option<Mouse>>>,
+    client_event_tx: broadcast::Sender<Event>,
+) {
     let notification_rx = mouse.subscribe_notifications();
 
     tokio::spawn(async move {
@@ -344,6 +370,36 @@ fn spawn_notification_forwarder(mouse: &Mouse, client_event_tx: broadcast::Sende
                                 battery_changed: flags.battery_changed(),
                             })),
                         });
+
+                        if flags.battery_changed() {
+                            let mouse_arc = mouse_arc.clone();
+                            let tx = client_event_tx.clone();
+                            tokio::spawn(async move {
+                                let guard = mouse_arc.lock().await;
+                                if let Some(m) = guard.as_ref() {
+                                    match m.get_battery().await {
+                                        Ok(battery) => {
+                                            let _ = tx.send(Event {
+                                                event: Some(event::Event::BatteryUpdate(
+                                                    BatteryUpdate {
+                                                        status: Some(ProtoBattery {
+                                                            voltage_mv: battery.voltage_mv as u32,
+                                                            percentage: battery.percentage as u32,
+                                                            charging: battery.charging,
+                                                        }),
+                                                    },
+                                                )),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "failed to fetch battery after change notification: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            });
+                        }
                     }
                     scyrox::Notification::Disconnected => {
                         let _ = client_event_tx.send(Event {
@@ -363,6 +419,47 @@ fn spawn_notification_forwarder(mouse: &Mouse, client_event_tx: broadcast::Sende
                     debug!("notification channel closed, forwarder exiting");
                     break;
                 }
+            }
+        }
+    });
+}
+
+/// Spawn a task that fetches battery status with retries after reconnection.
+///
+/// USB devices often aren't ready for HID commands immediately after hotplug
+/// enumeration, so we wait briefly and retry up to 3 times.
+fn spawn_battery_fetch_with_retry(mouse: Arc<Mutex<Option<Mouse>>>, tx: broadcast::Sender<Event>) {
+    tokio::spawn(async move {
+        // Give device time to become ready after USB enumeration
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        for attempt in 1..=3 {
+            let guard = mouse.lock().await;
+            if let Some(m) = guard.as_ref() {
+                match m.get_battery().await {
+                    Ok(battery) => {
+                        let _ = tx.send(Event {
+                            event: Some(event::Event::BatteryUpdate(BatteryUpdate {
+                                status: Some(ProtoBattery {
+                                    voltage_mv: battery.voltage_mv as u32,
+                                    percentage: battery.percentage as u32,
+                                    charging: battery.charging,
+                                }),
+                            })),
+                        });
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(attempt, "failed to fetch battery after reconnect: {e}");
+                        drop(guard);
+                        if attempt < 3 {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    }
+                }
+            } else {
+                // Mouse disconnected again before we could fetch
+                return;
             }
         }
     });

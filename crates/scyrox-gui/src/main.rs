@@ -1,6 +1,3 @@
-// TODO(phase-3): Remove once event wiring connects all scaffold modules.
-#![allow(dead_code)]
-
 //! Scyrox GUI application with systray and desktop notifications.
 //!
 //! This binary provides:
@@ -11,6 +8,7 @@
 mod app;
 mod events;
 mod notifications;
+#[allow(dead_code)]
 mod tray;
 
 use anyhow::Result;

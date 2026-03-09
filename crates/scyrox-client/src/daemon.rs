@@ -67,6 +67,13 @@ impl DaemonClient {
         let mut client = self.client.lock().await;
         Ok(client.get_daemon_info(Empty {}).await?.into_inner())
     }
+
+    /// Subscribe to the daemon event stream.
+    pub async fn watch_events(&self) -> Result<tonic::codec::Streaming<scyrox_proto::Event>> {
+        let mut client = self.client.lock().await;
+        let response = client.watch_events(scyrox_proto::Empty {}).await?;
+        Ok(response.into_inner())
+    }
 }
 
 #[async_trait]
