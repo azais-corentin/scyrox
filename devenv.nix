@@ -21,7 +21,10 @@
 
   # https://devenv.sh/languages/
   languages = {
-    rust.enable = true;
+    rust = {
+      enable = true;
+      channel = "stable";
+    };
   };
 
   # https://devenv.sh/processes/

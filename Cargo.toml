@@ -17,26 +17,26 @@ scyroxd = { path = "crates/scyroxd" }
 
 # Async runtime
 async-stream = "0.3.6"
-tokio = { version = "1.49.0", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio = { version = "1.50.0", features = ["full"] }
+tokio-stream = { version = "0.1.18", features = ["sync"] }
 
 # gRPC
 prost = "0.14.3"
-tonic = "0.14.3"
-tonic-prost = "0.14.3"
-tonic-prost-build = "0.14.3"
+tonic = "0.14.5"
+tonic-prost = "0.14.5"
+tonic-prost-build = "0.14.5"
 
 # IPC
-interprocess = { version = "2.2.3", features = ["tokio"] }
+interprocess = { version = "2.4.0", features = ["tokio"] }
 
 # USB
-nusb = { version = "0.2.1", features = ["tokio"] }
+nusb = { version = "0.2.2", features = ["tokio"] }
 
 # CLI
-clap = { version = "4.5.56", features = ["derive"] }
+clap = { version = "4.5.60", features = ["derive"] }
 
 # Error handling
-anyhow = "1.0.100"
+anyhow = "1.0.102"
 thiserror = "2.0.18"
 
 # Serialization
@@ -49,9 +49,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 # Utilities
-async-trait = "0.1"
+async-trait = "0.1.89"
 directories = "6.0.0"
 hex = "0.4.3"
-hyper-util = { version = "0.1", features = ["tokio"] }
-pin-project-lite = "0.2"
-tower = "0.5"
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+pin-project-lite = "0.2.17"
+tower = "0.5.3"
