@@ -130,12 +130,12 @@ impl DeviceState {
                 // If in wired mode, just note the wireless dongle is available
             }
             // Wireless disappeared (wired unchanged)
-            (w, w2, true, false) if w == w2 => {
-                if self.active_mode == Some(ConnectionMode::Wireless) && !is_wired {
-                    info!("device disconnected");
-                    self.active_mode = None;
-                    let _ = tx.send(DeviceEvent::Disconnected);
-                }
+            (w, w2, true, false)
+                if w == w2 && self.active_mode == Some(ConnectionMode::Wireless) && !is_wired =>
+            {
+                info!("device disconnected");
+                self.active_mode = None;
+                let _ = tx.send(DeviceEvent::Disconnected);
             }
             // No change or simultaneous change (rare)
             _ => {}
@@ -190,8 +190,8 @@ impl HotplugMonitor {
         let tx_clone = tx.clone();
 
         // Start the monitoring task
-        tokio::spawn(async move {
-            if let Err(e) = Self::monitor_loop(tx_clone).await {
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = Self::monitor_loop(tx_clone) {
                 error!("hotplug monitor error: {}", e);
             }
         });
@@ -200,7 +200,7 @@ impl HotplugMonitor {
     }
 
     /// The main monitoring loop.
-    async fn monitor_loop(tx: broadcast::Sender<DeviceEvent>) -> anyhow::Result<()> {
+    fn monitor_loop(tx: broadcast::Sender<DeviceEvent>) -> anyhow::Result<()> {
         let mut api = HidApi::new()?;
 
         // Initialize state from currently connected devices
@@ -215,7 +215,7 @@ impl HotplugMonitor {
         );
 
         loop {
-            tokio::time::sleep(POLL_INTERVAL).await;
+            std::thread::sleep(POLL_INTERVAL);
 
             if let Err(e) = api.refresh_devices() {
                 warn!("failed to refresh device list: {}", e);

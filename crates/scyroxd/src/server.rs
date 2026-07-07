@@ -146,8 +146,8 @@ impl ScyroxService {
         let mut guard = self.mouse.lock().await;
         if guard.is_some() {
             debug!("invalidating mouse connection");
-            *guard = None;
         }
+        dispose_mouse(&mut guard).await;
     }
 
     /// Convert a mouse error to a gRPC Status using the error's display message directly.
@@ -221,7 +221,16 @@ impl ScyroxService {
         async move {
             info!("device event handler started");
 
-            while let Ok(event) = rx.recv().await {
+            loop {
+                let event = match rx.recv().await {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(skipped = n, "device event handler lagged, continuing");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+
                 match event {
                     DeviceEvent::Connected { mode } => {
                         info!(?mode, "device connected");
@@ -276,8 +285,8 @@ impl ScyroxService {
                             let mut guard = mouse.lock().await;
                             if guard.is_some() {
                                 debug!("invalidating mouse connection");
-                                *guard = None;
                             }
+                            dispose_mouse(&mut guard).await;
                         }
 
                         let _ = client_event_tx.send(Event {
@@ -291,7 +300,7 @@ impl ScyroxService {
                         info!(?from, ?to, "connection mode changed");
                         {
                             let mut guard = mouse.lock().await;
-                            *guard = None;
+                            dispose_mouse(&mut guard).await;
                         }
 
                         match Mouse::open().await {
@@ -343,6 +352,15 @@ impl ScyroxService {
 
             warn!("device event receiver closed");
         }
+    }
+}
+
+/// Take and gracefully shut down the current mouse connection, if any.
+async fn dispose_mouse(guard: &mut Option<Mouse>) {
+    if let Some(mouse) = guard.take()
+        && let Err(e) = mouse.shutdown().await
+    {
+        warn!("mouse IO task shutdown failed: {e}");
     }
 }
 
@@ -1022,4 +1040,56 @@ fn profile_config_to_mouse_config(config: &ProfileConfig) -> Result<scyrox::Mous
         long_distance_mode: config.long_distance_mode,
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The device-event handler must survive a `RecvError::Lagged` and keep
+    /// processing subsequent events. Regression guard for the old
+    /// `while let Ok(event) = rx.recv().await` loop, which exited on the first
+    /// `Lagged` and thereby permanently disabled hotplug reconnect.
+    #[tokio::test]
+    async fn device_event_handler_survives_lagged() {
+        let Some(dirs) = ProjectDirs::from("dev", "scyrox", "scyroxd-test") else {
+            // Headless env without $HOME: ProfileStore has no ProjectDirs to
+            // build from. Skip rather than pull in a fixture dependency.
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+
+        // Capacity-1 channel with two queued sends before the handler polls:
+        // the first `recv()` observes `Lagged(1)`, the second yields the
+        // retained `Disconnected`.
+        let (tx, rx) = broadcast::channel(1);
+        tx.send(DeviceEvent::Disconnected).unwrap();
+        tx.send(DeviceEvent::Disconnected).unwrap();
+
+        let (client_event_tx, mut client_rx) = broadcast::channel(8);
+        let service = ScyroxService {
+            mouse: Arc::new(Mutex::new(None)),
+            profiles: ProfileStore::new(&dirs),
+            config: DaemonConfig::default(),
+            start_time: Instant::now(),
+            active_profile_id: Arc::new(Mutex::new(None)),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            client_event_tx,
+        };
+
+        tokio::spawn(service.create_device_event_handler(rx));
+
+        // Fixed loop skips the lag and forwards the retained Disconnected as a
+        // ConnectionChange(connected: false). The old loop emitted nothing, so
+        // this recv() would block until the timeout fires and the test fails.
+        let event = tokio::time::timeout(Duration::from_secs(1), client_rx.recv())
+            .await
+            .expect("device event handler died on RecvError::Lagged")
+            .unwrap();
+
+        match event.event {
+            Some(event::Event::ConnectionChange(c)) => assert!(!c.connected),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
 }

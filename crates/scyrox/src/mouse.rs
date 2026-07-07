@@ -1,6 +1,6 @@
 //! Mouse communication and configuration API.
 
-use hidapi::HidApi;
+use hidapi::{HidApi, HidDevice};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -87,38 +87,47 @@ impl Mouse {
     pub async fn open() -> Result<Self> {
         debug!("searching for mouse device");
 
-        let api = HidApi::new()?;
+        let (device, mode) =
+            tokio::task::spawn_blocking(move || -> Result<(HidDevice, ConnectionMode)> {
+                let api = HidApi::new()?;
 
-        let mut found_info = None;
-        let mut mode = ConnectionMode::Wireless;
+                let mut found_info = None;
+                let mut mode = ConnectionMode::Wireless;
 
-        for pid in PRODUCT_IDS {
-            if let Some(dev) = api.device_list().find(|d| {
-                d.vendor_id() == VENDOR_ID
-                    && d.product_id() == pid
-                    && d.interface_number() == INTERFACE_NUM as i32
-            }) {
-                mode = match pid {
-                    PID_WIRED => ConnectionMode::Wired,
-                    PID_WIRELESS_4K | PID_WIRELESS_STD => ConnectionMode::Wireless,
-                    _ => ConnectionMode::Wireless,
-                };
-                found_info = Some(dev.path().to_owned());
-                break;
-            }
-        }
+                for pid in PRODUCT_IDS {
+                    if let Some(dev) = api.device_list().find(|d| {
+                        d.vendor_id() == VENDOR_ID
+                            && d.product_id() == pid
+                            && d.interface_number() == INTERFACE_NUM as i32
+                    }) {
+                        mode = match pid {
+                            PID_WIRED => ConnectionMode::Wired,
+                            PID_WIRELESS_4K | PID_WIRELESS_STD => ConnectionMode::Wireless,
+                            _ => ConnectionMode::Wireless,
+                        };
+                        found_info = Some(dev.path().to_owned());
+                        break;
+                    }
+                }
 
-        let device_path = found_info.ok_or_else(|| {
-            error!(vid = VENDOR_ID, ?PRODUCT_IDS, "mouse device not found");
-            MouseError::NotFound {
-                vid: VENDOR_ID,
-                pids: PRODUCT_IDS.to_vec(),
-            }
-        })?;
+                let device_path = found_info.ok_or_else(|| {
+                    error!(vid = VENDOR_ID, ?PRODUCT_IDS, "mouse device not found");
+                    MouseError::NotFound {
+                        vid: VENDOR_ID,
+                        pids: PRODUCT_IDS.to_vec(),
+                    }
+                })?;
 
-        debug!(?mode, "found mouse device");
+                debug!(?mode, "found mouse device");
 
-        let device = api.open_path(&device_path)?;
+                let device = api.open_path(&device_path)?;
+                Ok((device, mode))
+            })
+            .await
+            .map_err(|_| {
+                error!("device open task panicked");
+                MouseError::TaskPanic
+            })??;
 
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (notification_tx, _) = broadcast::channel(NOTIFICATION_CHANNEL_CAPACITY);
@@ -924,8 +933,8 @@ impl Mouse {
             offset += chunk_len as u16;
         }
 
-        let macro_def = Macro::decode(&data)
-            .ok_or_else(|| MouseError::InsufficientData { need: 32, got: 0 })?;
+        let macro_def =
+            Macro::decode(&data).ok_or(MouseError::InsufficientData { need: 32, got: 0 })?;
 
         debug!(slot, name = %macro_def.name, events = macro_def.events.len(), "macro retrieved");
         Ok(macro_def)
