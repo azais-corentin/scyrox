@@ -60,24 +60,71 @@
         doCheck = false;
       };
 
-      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
-      mkCrate =
-        pname:
+      mkCrateWith =
+        pname: extraArgs:
+        let
+          crateArgs =
+            commonArgs
+            // extraArgs
+            // {
+              inherit pname;
+              cargoExtraArgs = "-p ${pname}";
+            };
+          # buildDepsOnly must see the same package selection and native/system
+          # dependencies, but not package post-install hooks such as wrapProgram.
+          depsArgs = builtins.removeAttrs crateArgs [ "postInstall" ];
+        in
         craneLib.buildPackage (
-          commonArgs
+          crateArgs
           // {
-            inherit pname cargoArtifacts;
-            cargoExtraArgs = "-p ${pname}";
+            cargoArtifacts = craneLib.buildDepsOnly depsArgs;
           }
         );
 
+      mkCrate = pname: mkCrateWith pname { };
+
+      desktopRuntimeLibs = with pkgs; [
+        libxkbcommon
+        wayland
+        libGL
+        vulkan-loader
+        libx11
+        libxcursor
+        libxi
+        libxrandr
+        libayatana-appindicator
+      ];
+
+      desktopBuildInputs = desktopRuntimeLibs ++ [
+        pkgs.gtk3
+      ];
+
+      mkDesktopCrate =
+        pname:
+        mkCrateWith pname {
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
+            pkgs.makeWrapper
+          ];
+          buildInputs = commonArgs.buildInputs ++ desktopBuildInputs;
+          postInstall = ''
+            wrapProgram "$out/bin/${pname}" \
+              --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath desktopRuntimeLibs}
+          '';
+        };
+
       scyroxctl = mkCrate "scyroxctl";
       scyroxd = mkCrate "scyroxd";
+      scyrox-tray = mkDesktopCrate "scyrox-tray";
+      scyrox-gui = mkDesktopCrate "scyrox-gui";
     in
     {
       packages.${system} = {
-        inherit scyroxctl scyroxd;
+        inherit
+          scyroxctl
+          scyroxd
+          scyrox-tray
+          scyrox-gui
+          ;
         default = scyroxctl;
       };
 
@@ -94,17 +141,7 @@
 
         # Runtime libraries for scyrox-gui (iced) and scyrox-tray
         # (libayatana-appindicator3.so.1 is dlopened by tray-icon) on NixOS.
-        LD_LIBRARY_PATH = lib.makeLibraryPath [
-          pkgs.libxkbcommon
-          pkgs.wayland
-          pkgs.libGL
-          pkgs.vulkan-loader
-          pkgs.libx11
-          pkgs.libxcursor
-          pkgs.libxi
-          pkgs.libxrandr
-          pkgs.libayatana-appindicator
-        ];
+        LD_LIBRARY_PATH = lib.makeLibraryPath desktopRuntimeLibs;
       };
 
       formatter.${system} = pkgs.nixfmt;
