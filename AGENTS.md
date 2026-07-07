@@ -287,6 +287,7 @@ All `scyroxctl/tests/` integration tests except some `cli_parsing.rs` tests (--h
 ## Environment
 
 - **Edition**: 2024 (resolver = "3")
-- **Toolchain**: Rust stable (managed via devenv/Nix with rust-overlay)
-- **Dev shell**: `devenv` (Nix-based); provides pkg-config, libusb1, protobuf, dprint, nixfmt
+- **Toolchain**: Rust stable (managed via Nix flake with rust-overlay)
+- **Dev shell**: Nix flake + direnv (`use flake`); provides pkg-config, libusb1, protobuf, dprint, nixfmt
+- **Packages**: `nix build .#scyroxctl` / `.#scyroxd` (crane-based, tests disabled in sandbox)
 - **No CI**: No `.github/workflows` present; hardware-dependent nature makes CI non-trivial
