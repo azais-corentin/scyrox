@@ -67,6 +67,13 @@ crates/
       output.rs     Text/JSON output formatting
       commands/     Per-subcommand handler modules
     tests/          Integration tests (hardware-gated)
+  scyrox-tray/      Cross-platform system tray battery indicator
+    src/
+      main.rs       tao event loop, tray creation, UserEvent dispatch
+      state.rs      TrayState enum + text formatting helpers
+      icon.rs       Font discovery + RGBA icon rendering
+      daemon.rs     Daemon spawn/connect and WatchEvents worker
+      notifications.rs  Low-battery desktop notification
 docs/               Protocol spec, battery estimation, firmware notes
 ```
 

@@ -88,9 +88,12 @@
           protobuf
           dprint
           nixfmt
+          # gtk3 build headers for scyrox-tray (tray-icon gtk feature + tao).
+          gtk3
         ];
 
-        # Runtime libraries for scyrox-gui (iced) on NixOS.
+        # Runtime libraries for scyrox-gui (iced) and scyrox-tray
+        # (libayatana-appindicator3.so.1 is dlopened by tray-icon) on NixOS.
         LD_LIBRARY_PATH = lib.makeLibraryPath [
           pkgs.libxkbcommon
           pkgs.wayland
@@ -100,6 +103,7 @@
           pkgs.libxcursor
           pkgs.libxi
           pkgs.libxrandr
+          pkgs.libayatana-appindicator
         ];
       };
 
