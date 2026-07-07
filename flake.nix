@@ -69,6 +69,9 @@
             // {
               inherit pname;
               cargoExtraArgs = "-p ${pname}";
+              meta = (extraArgs.meta or { }) // {
+                mainProgram = pname;
+              };
             };
           # buildDepsOnly must see the same package selection and native/system
           # dependencies, but not package post-install hooks such as wrapProgram.
