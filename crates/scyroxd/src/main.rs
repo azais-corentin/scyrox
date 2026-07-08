@@ -131,6 +131,9 @@ async fn main() -> Result<()> {
     let event_handler = service.create_device_event_handler(device_event_rx);
     tokio::spawn(event_handler);
 
+    // Spawn the periodic battery poll task
+    tokio::spawn(service.create_battery_poll_task());
+
     // Bind to Unix socket
     info!(?socket_path, "Binding to socket");
     let listener = ListenerOptions::new()

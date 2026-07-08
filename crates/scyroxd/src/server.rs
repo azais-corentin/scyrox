@@ -17,8 +17,8 @@ use scyrox_proto::{
     ApplyProfileRequest, BatteryStatus as ProtoBattery, BatteryUpdate, ConnectionChange,
     ConnectionMode, CreateProfileRequest, DaemonInfo, DeleteProfileRequest, DeviceStatus, Empty,
     Event, FirmwareInfo as ProtoFirmware, GetProfileRequest, LiftOffDistance as ProtoLod,
-    PollingRate as ProtoRate, Profile, ProfileApplied, ProfileList, Scyrox, SetBoolRequest,
-    SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetPollingRateRequest,
+    LowBatteryAlert, PollingRate as ProtoRate, Profile, ProfileApplied, ProfileList, Scyrox,
+    SetBoolRequest, SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetPollingRateRequest,
     SetSleepTimeoutRequest, SetSleepTimeoutResponse, SettingsChanged, UpdateProfileRequest, event,
     hz_to_proto_polling_rate, mm_to_proto_lod,
 };
@@ -353,6 +353,83 @@ impl ScyroxService {
             warn!("device event receiver closed");
         }
     }
+
+    /// Create a periodic battery poll task.
+    ///
+    /// Broadcasts a `BatteryUpdate` every `battery_poll_interval_secs` while the
+    /// mouse is connected and awake, and emits an edge-triggered `LowBatteryAlert`
+    /// when the battery drops to or below `low_battery_threshold` while not
+    /// charging. An interval of 0 disables polling.
+    pub fn create_battery_poll_task(&self) -> impl Future<Output = ()> + Send + 'static {
+        let mouse = Arc::clone(&self.mouse);
+        let client_event_tx = self.client_event_tx.clone();
+        let interval_secs = self.config.battery_poll_interval_secs;
+        let threshold = self.config.low_battery_threshold;
+
+        async move {
+            if interval_secs == 0 {
+                info!("battery polling disabled (battery_poll_interval_secs = 0)");
+                return;
+            }
+            info!(interval_secs, "battery poll task started");
+
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Consume the immediate first tick: startup/reconnect fetches are
+            // already covered by spawn_battery_fetch_with_retry and client RPCs.
+            ticker.tick().await;
+
+            let mut alerted = false;
+            loop {
+                ticker.tick().await;
+
+                let battery = {
+                    let guard = mouse.lock().await;
+                    let Some(m) = guard.as_ref() else {
+                        debug!("battery poll skipped: mouse disconnected");
+                        continue;
+                    };
+                    m.get_battery().await
+                };
+
+                match battery {
+                    Ok(battery) => {
+                        debug!(
+                            percentage = battery.percentage,
+                            charging = battery.charging,
+                            "periodic battery update"
+                        );
+                        let _ = client_event_tx.send(battery_update_event(&battery));
+
+                        let (new_alerted, emit) = low_battery_transition(
+                            alerted,
+                            battery.percentage,
+                            battery.charging,
+                            threshold,
+                        );
+                        alerted = new_alerted;
+                        if emit {
+                            info!(
+                                percentage = battery.percentage,
+                                threshold, "low battery alert"
+                            );
+                            let _ = client_event_tx.send(Event {
+                                event: Some(event::Event::LowBatteryAlert(LowBatteryAlert {
+                                    percentage: battery.percentage as u32,
+                                })),
+                            });
+                        }
+                    }
+                    Err(MouseError::DeviceOffline) => {
+                        debug!("battery poll skipped: mouse sleeping/out of range");
+                    }
+                    Err(e) => {
+                        warn!("periodic battery poll failed: {e}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Take and gracefully shut down the current mouse connection, if any.
@@ -362,6 +439,36 @@ async fn dispose_mouse(guard: &mut Option<Mouse>) {
     {
         warn!("mouse IO task shutdown failed: {e}");
     }
+}
+
+/// Build a `BatteryUpdate` broadcast event from a domain battery status.
+fn battery_update_event(battery: &scyrox::BatteryStatus) -> Event {
+    Event {
+        event: Some(event::Event::BatteryUpdate(BatteryUpdate {
+            status: Some(ProtoBattery {
+                voltage_mv: battery.voltage_mv as u32,
+                percentage: battery.percentage as u32,
+                charging: battery.charging,
+            }),
+        })),
+    }
+}
+
+/// Edge-triggered low-battery alert decision.
+///
+/// Returns `(new_alerted, emit_alert)`. An alert fires once when the battery
+/// drops to or below `threshold` while not charging (inclusive, matching the
+/// tray's semantics in `crates/scyrox-tray/src/state.rs`); the armed state
+/// resets as soon as the battery recovers above the threshold or starts
+/// charging, re-enabling a future alert.
+fn low_battery_transition(
+    alerted: bool,
+    percentage: u8,
+    charging: bool,
+    threshold: u8,
+) -> (bool, bool) {
+    let is_low = percentage <= threshold && !charging;
+    (is_low, is_low && !alerted)
 }
 
 /// Spawn a task to forward mouse notifications to clients (static version for use in closures).
@@ -397,17 +504,7 @@ fn spawn_notification_forwarder(
                                 if let Some(m) = guard.as_ref() {
                                     match m.get_battery().await {
                                         Ok(battery) => {
-                                            let _ = tx.send(Event {
-                                                event: Some(event::Event::BatteryUpdate(
-                                                    BatteryUpdate {
-                                                        status: Some(ProtoBattery {
-                                                            voltage_mv: battery.voltage_mv as u32,
-                                                            percentage: battery.percentage as u32,
-                                                            charging: battery.charging,
-                                                        }),
-                                                    },
-                                                )),
-                                            });
+                                            let _ = tx.send(battery_update_event(&battery));
                                         }
                                         Err(e) => {
                                             warn!(
@@ -456,15 +553,7 @@ fn spawn_battery_fetch_with_retry(mouse: Arc<Mutex<Option<Mouse>>>, tx: broadcas
             if let Some(m) = guard.as_ref() {
                 match m.get_battery().await {
                     Ok(battery) => {
-                        let _ = tx.send(Event {
-                            event: Some(event::Event::BatteryUpdate(BatteryUpdate {
-                                status: Some(ProtoBattery {
-                                    voltage_mv: battery.voltage_mv as u32,
-                                    percentage: battery.percentage as u32,
-                                    charging: battery.charging,
-                                }),
-                            })),
-                        });
+                        let _ = tx.send(battery_update_event(&battery));
                         return;
                     }
                     Err(e) => {
@@ -1091,5 +1180,42 @@ mod tests {
             Some(event::Event::ConnectionChange(c)) => assert!(!c.connected),
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    /// Crossing to/below the threshold while discharging fires exactly once:
+    /// the inclusive boundary reading arms and emits, and a subsequent
+    /// still-low reading keeps the armed state but suppresses a repeat alert.
+    #[test]
+    fn low_battery_alert_fires_once_on_crossing() {
+        // Inclusive boundary: percentage == threshold, not charging.
+        assert_eq!(low_battery_transition(false, 20, false, 20), (true, true));
+        // Already alerted and still low: stay armed, do not re-emit.
+        assert_eq!(low_battery_transition(true, 15, false, 20), (true, false));
+    }
+
+    /// Recovering above the threshold disarms the alert, and a later drop
+    /// back to/below it re-arms and fires again.
+    #[test]
+    fn low_battery_alert_resets_on_recovery() {
+        // Recovery above threshold clears the armed state without emitting.
+        assert_eq!(low_battery_transition(true, 25, false, 20), (false, false));
+        // Fresh drop after recovery re-arms and fires.
+        assert_eq!(low_battery_transition(false, 18, false, 20), (true, true));
+    }
+
+    /// Charging is never treated as low, regardless of percentage, and a
+    /// plugged-in charger clears a pending armed state.
+    #[test]
+    fn low_battery_alert_never_fires_while_charging() {
+        // Deeply low but charging: not low, no alert.
+        assert_eq!(low_battery_transition(false, 5, true, 20), (false, false));
+        // Charging while previously alerted resets the armed state.
+        assert_eq!(low_battery_transition(true, 15, true, 20), (false, false));
+    }
+
+    /// Just above the threshold is not low: no arm, no alert.
+    #[test]
+    fn low_battery_alert_does_not_fire_just_above_threshold() {
+        assert_eq!(low_battery_transition(false, 21, false, 20), (false, false));
     }
 }
