@@ -1,8 +1,8 @@
 //! Daemon configuration management.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -11,7 +11,7 @@ use tracing::{debug, info};
 /// Daemon configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
-    /// Battery percentage threshold for low battery alerts.
+    /// Daemon-owned battery percentage threshold for low-battery alerts (default: 10).
     #[serde(default = "default_low_battery_threshold")]
     pub low_battery_threshold: u8,
 
@@ -29,7 +29,7 @@ pub struct DaemonConfig {
 }
 
 fn default_low_battery_threshold() -> u8 {
-    20
+    10
 }
 
 fn default_battery_poll_interval() -> u64 {
@@ -52,14 +52,20 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
+    /// Canonical config file path (shared by startup load and RPC persistence).
+    pub fn path(dirs: &ProjectDirs) -> PathBuf {
+        dirs.config_dir().join("daemon.toml")
+    }
+
     /// Load configuration from the config file, or create default if missing.
     pub async fn load(dirs: &ProjectDirs) -> Result<Self> {
-        let config_path = dirs.config_dir().join("daemon.toml");
+        let config_path = Self::path(dirs);
 
         if config_path.exists() {
             debug!(?config_path, "Loading configuration");
             let contents = fs::read_to_string(&config_path).await?;
             let config: DaemonConfig = toml::from_str(&contents)?;
+            config.validate()?;
             Ok(config)
         } else {
             info!(?config_path, "No config file found, using defaults");
@@ -70,14 +76,80 @@ impl DaemonConfig {
         }
     }
 
+    /// Validate configuration values.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.low_battery_threshold <= 100,
+            "low_battery_threshold must be between 0 and 100"
+        );
+        Ok(())
+    }
+
     /// Save configuration to a file.
     pub async fn save(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let contents = toml::to_string_pretty(self)?;
-        fs::write(path, contents).await?;
+        let tmp = path.with_extension("toml.tmp");
+        fs::write(&tmp, contents).await?;
+        fs::rename(&tmp, path).await?;
         debug!(?path, "Saved configuration");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_low_battery_threshold_is_ten_percent() {
+        assert_eq!(DaemonConfig::default().low_battery_threshold, 10);
+    }
+
+    #[test]
+    fn missing_low_battery_threshold_defaults_to_ten_percent() {
+        let config: DaemonConfig = toml::from_str(
+            "battery_poll_interval_secs = 30\n\
+             auto_apply_on_connect = false\n",
+        )
+        .unwrap();
+
+        assert_eq!(config.low_battery_threshold, 10);
+    }
+
+    #[test]
+    fn threshold_above_one_hundred_is_rejected() {
+        let config = DaemonConfig {
+            low_battery_threshold: 101,
+            ..DaemonConfig::default()
+        };
+
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "low_battery_threshold must be between 0 and 100"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_roundtrips_and_leaves_no_temp_file() {
+        let dir = std::env::temp_dir().join(format!("scyroxd-config-test-{}", std::process::id()));
+        let path = dir.join("daemon.toml");
+
+        let config = DaemonConfig {
+            low_battery_threshold: 42,
+            ..DaemonConfig::default()
+        };
+        config.save(&path).await.unwrap();
+
+        let loaded: DaemonConfig =
+            toml::from_str(&fs::read_to_string(&path).await.unwrap()).unwrap();
+        assert_eq!(loaded.low_battery_threshold, 42);
+        assert!(!path.with_extension("toml.tmp").exists());
+
+        fs::remove_dir_all(&dir).await.unwrap();
     }
 }

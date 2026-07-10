@@ -129,3 +129,37 @@ fn test_format_flag_rejects_invalid() {
         .failure()
         .stderr(predicate::str::contains("text").and(predicate::str::contains("json")));
 }
+
+#[test]
+fn test_daemon_config_get_shape_is_accepted() {
+    scyroxctl_raw()
+        .args(["daemon", "config", "get", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage:"));
+}
+
+#[test]
+fn test_daemon_config_set_shape_is_accepted() {
+    scyroxctl_raw()
+        .args([
+            "daemon",
+            "config",
+            "set",
+            "--low-battery-threshold",
+            "10",
+            "--help",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage:"));
+}
+
+#[test]
+fn test_daemon_config_rejects_threshold_above_one_hundred() {
+    scyroxctl_raw()
+        .args(["daemon", "config", "set", "--low-battery-threshold", "101"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("101").and(predicate::str::contains("0..=100")));
+}

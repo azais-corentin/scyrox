@@ -11,7 +11,7 @@ use std::time::Duration;
 use tao::event_loop::EventLoopProxy;
 use tracing::{debug, error, info, warn};
 
-use scyrox_client::{Backend, DaemonClient};
+use scyrox_client::{Backend, DaemonClient, DaemonConfig, EventStream};
 use scyrox_proto::event::Event;
 
 use crate::UserEvent;
@@ -24,6 +24,8 @@ const SPAWN_CONNECT_ATTEMPTS: u32 = 10;
 const SPAWN_CONNECT_DELAY: Duration = Duration::from_millis(500);
 /// Backoff before retrying after a failed connect/spawn round.
 const RETRY_BACKOFF: Duration = Duration::from_secs(5);
+/// Delay before reconnecting after an established daemon session fails.
+const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
 /// What the worker should do next.
 enum Flow {
@@ -52,18 +54,45 @@ async fn worker(proxy: EventLoopProxy<UserEvent>) {
             Err(Flow::Reconnect) => continue,
         };
 
-        // Push an initial snapshot before subscribing to the stream.
+        // Subscribe before reading config so a concurrent threshold change is
+        // never lost: it lands either in the fetched snapshot or in the
+        // already-open stream.
+        let stream = match client.watch_events().await {
+            Ok(stream) => stream,
+            Err(e) => {
+                warn!("failed to open event stream: {e}");
+                if !push_state(&proxy, TrayState::DaemonDown) {
+                    return;
+                }
+                tokio::time::sleep(RECONNECT_DELAY).await;
+                continue;
+            }
+        };
+
+        // Best-effort: an older daemon (Unimplemented) or an invalid stored
+        // config must not take down an otherwise healthy session; rendering
+        // degrades to no threshold coloring.
+        match client.get_daemon_config().await {
+            Ok(config) => {
+                if !push_threshold(&proxy, config.low_battery_threshold) {
+                    return;
+                }
+            }
+            Err(e) => warn!("failed to read daemon configuration: {e}"),
+        }
+
+        // Push an initial snapshot only after the effective threshold.
         if !push_state(&proxy, initial_state(&client).await) {
             return;
         }
 
-        match run_stream(&proxy, &client).await {
+        match consume_stream(&proxy, &client, stream).await {
             Flow::Stop => return,
             Flow::Reconnect => {
                 if !push_state(&proxy, TrayState::DaemonDown) {
                     return;
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(RECONNECT_DELAY).await;
             }
         }
     }
@@ -123,23 +152,18 @@ async fn initial_state(client: &DaemonClient) -> TrayState {
     }
 }
 
-/// Consume the event stream until it ends or errors.
-async fn run_stream(proxy: &EventLoopProxy<UserEvent>, client: &DaemonClient) -> Flow {
-    let mut stream = match client.watch_events().await {
-        Ok(stream) => stream,
-        Err(e) => {
-            warn!("failed to open event stream: {e}");
-            return Flow::Reconnect;
-        }
-    };
-
+/// Consume an already-open event stream until it ends or errors.
+async fn consume_stream(
+    proxy: &EventLoopProxy<UserEvent>,
+    client: &DaemonClient,
+    mut stream: EventStream,
+) -> Flow {
     loop {
         match stream.message().await {
-            Ok(Some(message)) => {
-                if !handle_event(proxy, client, message).await {
-                    return Flow::Stop;
-                }
-            }
+            Ok(Some(message)) => match handle_event(proxy, client, message).await {
+                Ok(()) => {}
+                Err(flow) => return flow,
+            },
             Ok(None) => {
                 info!("event stream ended");
                 return Flow::Reconnect;
@@ -152,20 +176,26 @@ async fn run_stream(proxy: &EventLoopProxy<UserEvent>, client: &DaemonClient) ->
     }
 }
 
-/// Dispatch a single proto event. Returns `false` if the event loop is gone.
+/// Dispatch a proto event, requesting a reconnect for invalid daemon config.
 async fn handle_event(
     proxy: &EventLoopProxy<UserEvent>,
     client: &DaemonClient,
     message: scyrox_proto::Event,
-) -> bool {
+) -> Result<(), Flow> {
     let Some(event) = message.event else {
-        return true;
+        return Ok(());
     };
 
     match event {
         Event::BatteryUpdate(update) => match update.status {
-            Some(status) => push_state(proxy, battery_from_proto(&status)),
-            None => true,
+            Some(status) => {
+                if push_state(proxy, battery_from_proto(&status)) {
+                    Ok(())
+                } else {
+                    Err(Flow::Stop)
+                }
+            }
+            None => Ok(()),
         },
         Event::ConnectionChange(change) => {
             let state = if change.connected {
@@ -177,19 +207,44 @@ async fn handle_event(
             } else {
                 TrayState::Disconnected
             };
-            push_state(proxy, state)
+            if push_state(proxy, state) {
+                Ok(())
+            } else {
+                Err(Flow::Stop)
+            }
         }
         Event::LowBatteryAlert(alert) => {
             notifications::battery_low(alert.percentage as u8).await;
-            true
+            Ok(())
         }
-        Event::ProfileApplied(_) | Event::SettingsChanged(_) => true,
+        Event::DaemonConfigChanged(change) => {
+            let Some(config) = change.config else {
+                warn!("daemon configuration event missing config");
+                return Err(Flow::Reconnect);
+            };
+            let config = DaemonConfig::try_from(config).map_err(|e| {
+                warn!("invalid daemon configuration event: {e}");
+                Flow::Reconnect
+            })?;
+            if push_threshold(proxy, config.low_battery_threshold) {
+                Ok(())
+            } else {
+                Err(Flow::Stop)
+            }
+        }
+        Event::ProfileApplied(_) | Event::SettingsChanged(_) => Ok(()),
     }
 }
 
 /// Push a state update; returns `false` when the event loop has closed.
 fn push_state(proxy: &EventLoopProxy<UserEvent>, state: TrayState) -> bool {
     proxy.send_event(UserEvent::State(state)).is_ok()
+}
+
+fn push_threshold(proxy: &EventLoopProxy<UserEvent>, threshold: u8) -> bool {
+    proxy
+        .send_event(UserEvent::LowBatteryThreshold(threshold))
+        .is_ok()
 }
 
 fn battery_from_domain(status: &scyrox::BatteryStatus) -> TrayState {

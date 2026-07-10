@@ -7,14 +7,14 @@ use serde_json::Value;
 
 /// Returns a Command for scyroxctl with -d (direct) flag
 pub fn scyroxctl() -> Command {
-    let mut cmd = Command::cargo_bin("scyroxctl").unwrap();
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("scyroxctl");
     cmd.arg("-d");
     cmd
 }
 
 /// Returns a Command without -d flag (for CLI parsing tests)
 pub fn scyroxctl_raw() -> Command {
-    Command::cargo_bin("scyroxctl").unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("scyroxctl")
 }
 
 /// Panics with clear message if device not connected
@@ -127,6 +127,12 @@ impl ConfigGuard {
         Self {
             original: get_config_json(),
         }
+    }
+}
+
+impl Default for ConfigGuard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

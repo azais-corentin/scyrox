@@ -60,7 +60,11 @@ pub fn load_font() -> Result<FontVec> {
 }
 
 /// Render the tray icon for a given state.
-pub fn render(state: &TrayState, font: &FontVec) -> tray_icon::Icon {
+pub fn render(
+    state: &TrayState,
+    font: &FontVec,
+    low_battery_threshold: Option<u8>,
+) -> tray_icon::Icon {
     let mut pixmap = Pixmap::new(SIZE, SIZE).expect("64x64 is a valid pixmap size");
 
     match state {
@@ -72,7 +76,7 @@ pub fn render(state: &TrayState, font: &FontVec) -> tray_icon::Icon {
             if *charging {
                 draw_bolt(&mut pixmap);
             } else {
-                let color = if is_low(state) { LOW } else { WHITE };
+                let color = battery_text_color(state, low_battery_threshold);
                 render_text(&mut pixmap, &percentage.to_string(), color, font);
             }
         }
@@ -80,6 +84,14 @@ pub fn render(state: &TrayState, font: &FontVec) -> tray_icon::Icon {
     }
 
     to_icon(pixmap)
+}
+
+fn battery_text_color(state: &TrayState, low_battery_threshold: Option<u8>) -> Rgb {
+    if low_battery_threshold.is_some_and(|threshold| is_low(state, threshold)) {
+        LOW
+    } else {
+        WHITE
+    }
 }
 
 /// Convert the premultiplied pixmap into a straight-RGBA `tray_icon::Icon`.
@@ -337,7 +349,20 @@ mod tests {
             },
         ];
         for state in states {
-            let _icon = render(&state, &font);
+            let _with_threshold = render(&state, &font, Some(10));
+            let _without_threshold = render(&state, &font, None);
         }
+    }
+
+    #[test]
+    fn low_battery_color_requires_daemon_threshold() {
+        let state = TrayState::Battery {
+            percentage: 10,
+            voltage_mv: 3500,
+            charging: false,
+        };
+
+        assert_eq!(battery_text_color(&state, Some(10)), LOW);
+        assert_eq!(battery_text_color(&state, None), WHITE);
     }
 }

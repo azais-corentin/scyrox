@@ -1,5 +1,6 @@
 //! gRPC service implementation.
 
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,10 +16,11 @@ use tracing::{debug, info, instrument, warn};
 use scyrox::{Mouse, MouseError};
 use scyrox_proto::{
     ApplyProfileRequest, BatteryStatus as ProtoBattery, BatteryUpdate, ConnectionChange,
-    ConnectionMode, CreateProfileRequest, DaemonInfo, DeleteProfileRequest, DeviceStatus, Empty,
-    Event, FirmwareInfo as ProtoFirmware, GetProfileRequest, LiftOffDistance as ProtoLod,
-    LowBatteryAlert, PollingRate as ProtoRate, Profile, ProfileApplied, ProfileList, Scyrox,
-    SetBoolRequest, SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetPollingRateRequest,
+    ConnectionMode, CreateProfileRequest, DaemonConfig as ProtoDaemonConfig, DaemonConfigChanged,
+    DaemonInfo, DeleteProfileRequest, DeviceStatus, Empty, Event, FirmwareInfo as ProtoFirmware,
+    GetProfileRequest, LiftOffDistance as ProtoLod, LowBatteryAlert, PollingRate as ProtoRate,
+    Profile, ProfileApplied, ProfileList, Scyrox, SetBoolRequest, SetDefaultProfileRequest,
+    SetLiftOffDistanceRequest, SetLowBatteryThresholdRequest, SetPollingRateRequest,
     SetSleepTimeoutRequest, SetSleepTimeoutResponse, SettingsChanged, UpdateProfileRequest, event,
     hz_to_proto_polling_rate, mm_to_proto_lod,
 };
@@ -58,8 +60,10 @@ pub struct ScyroxService {
     mouse: Arc<Mutex<Option<Mouse>>>,
     /// Profile storage.
     profiles: ProfileStore,
-    /// Daemon configuration.
-    config: DaemonConfig,
+    /// Shared daemon configuration.
+    config: Arc<Mutex<DaemonConfig>>,
+    /// Path used to persist daemon configuration.
+    config_path: PathBuf,
     /// Daemon start time.
     start_time: Instant,
     /// Currently active profile ID (the profile last applied to the mouse).
@@ -90,10 +94,12 @@ impl ScyroxService {
         // Create client event broadcast channel
         let (client_event_tx, _) = broadcast::channel(32);
 
+        let config_path = DaemonConfig::path(&dirs);
         let service = Self {
             mouse: Arc::new(Mutex::new(None)),
             profiles: ProfileStore::new(&dirs),
-            config,
+            config: Arc::new(Mutex::new(config)),
+            config_path,
             start_time: Instant::now(),
             active_profile_id: Arc::new(Mutex::new(None)),
             shutdown_tx,
@@ -264,13 +270,14 @@ impl ScyroxService {
                                     client_event_tx.clone(),
                                 );
 
+                                let config_snapshot = config.lock().await.clone();
                                 // Auto-apply last active profile or default
                                 auto_apply_profile(
                                     &mouse,
                                     &active_profile_id,
                                     &client_event_tx,
                                     &profiles,
-                                    &config,
+                                    &config_snapshot,
                                 )
                                 .await;
                             }
@@ -332,13 +339,14 @@ impl ScyroxService {
                                     client_event_tx.clone(),
                                 );
 
+                                let config_snapshot = config.lock().await.clone();
                                 // Re-apply last active profile
                                 auto_apply_profile(
                                     &mouse,
                                     &active_profile_id,
                                     &client_event_tx,
                                     &profiles,
-                                    &config,
+                                    &config_snapshot,
                                 )
                                 .await;
                             }
@@ -357,16 +365,17 @@ impl ScyroxService {
     /// Create a periodic battery poll task.
     ///
     /// Broadcasts a `BatteryUpdate` every `battery_poll_interval_secs` while the
-    /// mouse is connected and awake, and emits an edge-triggered `LowBatteryAlert`
-    /// when the battery drops to or below `low_battery_threshold` while not
-    /// charging. An interval of 0 disables polling.
+    /// mouse is connected and awake. A `LowBatteryAlert` fires once at or below
+    /// the live daemon-owned threshold while discharging, then re-arms after
+    /// charging or five percentage points of recovery. An interval of 0 disables
+    /// polling.
     pub fn create_battery_poll_task(&self) -> impl Future<Output = ()> + Send + 'static {
         let mouse = Arc::clone(&self.mouse);
         let client_event_tx = self.client_event_tx.clone();
-        let interval_secs = self.config.battery_poll_interval_secs;
-        let threshold = self.config.low_battery_threshold;
+        let config = Arc::clone(&self.config);
 
         async move {
+            let interval_secs = config.lock().await.battery_poll_interval_secs;
             if interval_secs == 0 {
                 info!("battery polling disabled (battery_poll_interval_secs = 0)");
                 return;
@@ -382,6 +391,7 @@ impl ScyroxService {
             let mut alerted = false;
             loop {
                 ticker.tick().await;
+                let threshold = config.lock().await.low_battery_threshold;
 
                 let battery = {
                     let guard = mouse.lock().await;
@@ -456,19 +466,28 @@ fn battery_update_event(battery: &scyrox::BatteryStatus) -> Event {
 
 /// Edge-triggered low-battery alert decision.
 ///
-/// Returns `(new_alerted, emit_alert)`. An alert fires once when the battery
-/// drops to or below `threshold` while not charging (inclusive, matching the
-/// tray's semantics in `crates/scyrox-tray/src/state.rs`); the armed state
-/// resets as soon as the battery recovers above the threshold or starts
-/// charging, re-enabling a future alert.
+/// Returns `(new_alerted, emit_alert)`. An alert fires once at or below
+/// `threshold` while discharging. Charging re-arms immediately; otherwise the
+/// latch clears only when the percentage is above `threshold` and reaches
+/// `min(threshold + 5, 100)`.
 fn low_battery_transition(
     alerted: bool,
     percentage: u8,
     charging: bool,
     threshold: u8,
 ) -> (bool, bool) {
-    let is_low = percentage <= threshold && !charging;
-    (is_low, is_low && !alerted)
+    if charging {
+        return (false, false);
+    }
+
+    if alerted {
+        let recovery_threshold = threshold.saturating_add(5).min(100);
+        let recovered = percentage > threshold && percentage >= recovery_threshold;
+        return (!recovered, false);
+    }
+
+    let emit = percentage <= threshold;
+    (emit, emit)
 }
 
 /// Spawn a task to forward mouse notifications to clients (static version for use in closures).
@@ -1048,6 +1067,58 @@ impl Scyrox for ScyroxService {
     }
 
     #[instrument(skip(self, _request))]
+    async fn get_daemon_config(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<ProtoDaemonConfig>, Status> {
+        let config = self.config.lock().await;
+        Ok(Response::new(daemon_config_to_proto(&config)))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn set_low_battery_threshold(
+        &self,
+        request: Request<SetLowBatteryThresholdRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let percentage = request.into_inner().percentage;
+        if percentage > 100 {
+            return Err(Status::invalid_argument(
+                "low_battery_threshold must be between 0 and 100",
+            ));
+        }
+        let percentage = percentage as u8;
+
+        let mut config = self.config.lock().await;
+        if config.low_battery_threshold == percentage {
+            return Ok(Response::new(Empty {}));
+        }
+
+        let mut candidate = config.clone();
+        candidate.low_battery_threshold = percentage;
+        candidate
+            .validate()
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        candidate
+            .save(&self.config_path)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to save daemon configuration: {e}")))?;
+
+        let proto_config = daemon_config_to_proto(&candidate);
+        *config = candidate;
+
+        // Send while still holding the lock so subscribers observe config
+        // changes in commit order.
+        let _ = self.client_event_tx.send(Event {
+            event: Some(event::Event::DaemonConfigChanged(DaemonConfigChanged {
+                config: Some(proto_config),
+            })),
+        });
+        drop(config);
+
+        Ok(Response::new(Empty {}))
+    }
+
+    #[instrument(skip(self, _request))]
     async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
         info!("Shutdown requested via RPC");
         // Signal shutdown to the main loop
@@ -1059,6 +1130,12 @@ impl Scyrox for ScyroxService {
 // =============================================================================
 // Conversion Helpers
 // =============================================================================
+
+fn daemon_config_to_proto(config: &DaemonConfig) -> ProtoDaemonConfig {
+    ProtoDaemonConfig {
+        low_battery_threshold: config.low_battery_threshold as u32,
+    }
+}
 
 /// Convert a profile (with Hz/mm fields) to proto format.
 fn profile_to_proto(profile: crate::profiles::Profile) -> Profile {
@@ -1133,17 +1210,73 @@ fn profile_config_to_mouse_config(config: &ProfileConfig) -> Result<scyrox::Mous
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
+    static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new() -> Self {
+            let sequence = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "scyroxd-server-tests-{}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self { path }
+        }
+
+        fn config_path(&self) -> PathBuf {
+            self.path.join("daemon.toml")
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn service_fixture(low_battery_threshold: u8) -> Option<(ScyroxService, TestDir)> {
+        let dirs = ProjectDirs::from("dev", "scyrox", "scyroxd-test")?;
+        let test_dir = TestDir::new();
+        let (client_event_tx, _) = broadcast::channel(32);
+        let service = ScyroxService {
+            mouse: Arc::new(Mutex::new(None)),
+            profiles: ProfileStore::new(&dirs),
+            config: Arc::new(Mutex::new(DaemonConfig {
+                low_battery_threshold,
+                ..DaemonConfig::default()
+            })),
+            config_path: test_dir.config_path(),
+            start_time: Instant::now(),
+            active_profile_id: Arc::new(Mutex::new(None)),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            client_event_tx,
+        };
+        Some((service, test_dir))
+    }
+
+    async fn get_low_battery_threshold(service: &ScyroxService) -> u32 {
+        service
+            .get_daemon_config(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .low_battery_threshold
+    }
+
     /// The device-event handler must survive a `RecvError::Lagged` and keep
-    /// processing subsequent events. Regression guard for the old
-    /// `while let Ok(event) = rx.recv().await` loop, which exited on the first
-    /// `Lagged` and thereby permanently disabled hotplug reconnect.
+    /// processing subsequent events.
     #[tokio::test]
     async fn device_event_handler_survives_lagged() {
-        let Some(dirs) = ProjectDirs::from("dev", "scyrox", "scyroxd-test") else {
-            // Headless env without $HOME: ProfileStore has no ProjectDirs to
-            // build from. Skip rather than pull in a fixture dependency.
+        let Some((service, _test_dir)) = service_fixture(10) else {
             eprintln!("skipping: ProjectDirs unavailable in this environment");
             return;
         };
@@ -1154,68 +1287,174 @@ mod tests {
         let (tx, rx) = broadcast::channel(1);
         tx.send(DeviceEvent::Disconnected).unwrap();
         tx.send(DeviceEvent::Disconnected).unwrap();
-
-        let (client_event_tx, mut client_rx) = broadcast::channel(8);
-        let service = ScyroxService {
-            mouse: Arc::new(Mutex::new(None)),
-            profiles: ProfileStore::new(&dirs),
-            config: DaemonConfig::default(),
-            start_time: Instant::now(),
-            active_profile_id: Arc::new(Mutex::new(None)),
-            shutdown_tx: tokio::sync::watch::channel(false).0,
-            client_event_tx,
-        };
+        let mut client_rx = service.client_event_tx.subscribe();
 
         tokio::spawn(service.create_device_event_handler(rx));
 
-        // Fixed loop skips the lag and forwards the retained Disconnected as a
-        // ConnectionChange(connected: false). The old loop emitted nothing, so
-        // this recv() would block until the timeout fires and the test fails.
         let event = tokio::time::timeout(Duration::from_secs(1), client_rx.recv())
             .await
             .expect("device event handler died on RecvError::Lagged")
             .unwrap();
 
         match event.event {
-            Some(event::Event::ConnectionChange(c)) => assert!(!c.connected),
+            Some(event::Event::ConnectionChange(change)) => assert!(!change.connected),
             other => panic!("unexpected event: {other:?}"),
         }
     }
 
-    /// Crossing to/below the threshold while discharging fires exactly once:
-    /// the inclusive boundary reading arms and emits, and a subsequent
-    /// still-low reading keeps the armed state but suppresses a repeat alert.
-    #[test]
-    fn low_battery_alert_fires_once_on_crossing() {
-        // Inclusive boundary: percentage == threshold, not charging.
-        assert_eq!(low_battery_transition(false, 20, false, 20), (true, true));
-        // Already alerted and still low: stay armed, do not re-emit.
-        assert_eq!(low_battery_transition(true, 15, false, 20), (true, false));
+    #[tokio::test]
+    async fn get_daemon_config_returns_threshold_without_mouse() {
+        let Some((service, _test_dir)) = service_fixture(37) else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+
+        assert_eq!(get_low_battery_threshold(&service).await, 37);
     }
 
-    /// Recovering above the threshold disarms the alert, and a later drop
-    /// back to/below it re-arms and fires again.
-    #[test]
-    fn low_battery_alert_resets_on_recovery() {
-        // Recovery above threshold clears the armed state without emitting.
-        assert_eq!(low_battery_transition(true, 25, false, 20), (false, false));
-        // Fresh drop after recovery re-arms and fires.
-        assert_eq!(low_battery_transition(false, 18, false, 20), (true, true));
+    #[tokio::test]
+    async fn set_low_battery_threshold_persists_updates_and_broadcasts() {
+        let Some((service, _test_dir)) = service_fixture(10) else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        let mut events = service.client_event_tx.subscribe();
+
+        service
+            .set_low_battery_threshold(Request::new(SetLowBatteryThresholdRequest {
+                percentage: 17,
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(get_low_battery_threshold(&service).await, 17);
+        let contents = tokio::fs::read_to_string(&service.config_path)
+            .await
+            .unwrap();
+        let persisted: DaemonConfig = toml::from_str(&contents).unwrap();
+        assert_eq!(persisted.low_battery_threshold, 17);
+
+        let event = events.try_recv().unwrap();
+        match event.event {
+            Some(event::Event::DaemonConfigChanged(change)) => {
+                assert_eq!(change.config.unwrap().low_battery_threshold, 17);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 
-    /// Charging is never treated as low, regardless of percentage, and a
-    /// plugged-in charger clears a pending armed state.
+    #[tokio::test]
+    async fn setting_current_low_battery_threshold_is_noop() {
+        let Some((service, _test_dir)) = service_fixture(10) else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        let mut events = service.client_event_tx.subscribe();
+
+        service
+            .set_low_battery_threshold(Request::new(SetLowBatteryThresholdRequest {
+                percentage: 10,
+            }))
+            .await
+            .unwrap();
+
+        assert!(!service.config_path.exists());
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_low_battery_threshold_does_not_mutate_or_broadcast() {
+        let Some((service, _test_dir)) = service_fixture(10) else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        let mut events = service.client_event_tx.subscribe();
+
+        let status = service
+            .set_low_battery_threshold(Request::new(SetLowBatteryThresholdRequest {
+                percentage: 101,
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            status.message(),
+            "low_battery_threshold must be between 0 and 100"
+        );
+        assert_eq!(get_low_battery_threshold(&service).await, 10);
+        assert!(!service.config_path.exists());
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_keeps_previous_threshold_and_suppresses_event() {
+        let Some((mut service, test_dir)) = service_fixture(10) else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        service.config_path = test_dir.path.clone();
+        let mut events = service.client_event_tx.subscribe();
+
+        let status = service
+            .set_low_battery_threshold(Request::new(SetLowBatteryThresholdRequest {
+                percentage: 17,
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert!(
+            status
+                .message()
+                .starts_with("Failed to save daemon configuration:")
+        );
+        assert_eq!(get_low_battery_threshold(&service).await, 10);
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn low_battery_alert_fires_once_until_hysteresis_rearms() {
+        let mut alerted = false;
+        let mut emitted = Vec::new();
+
+        for percentage in [10, 11, 9, 14, 15, 10] {
+            let (new_alerted, emit) = low_battery_transition(alerted, percentage, false, 10);
+            alerted = new_alerted;
+            emitted.push(emit);
+        }
+
+        assert_eq!(emitted, [true, false, false, false, false, true]);
+    }
+
     #[test]
     fn low_battery_alert_never_fires_while_charging() {
-        // Deeply low but charging: not low, no alert.
-        assert_eq!(low_battery_transition(false, 5, true, 20), (false, false));
-        // Charging while previously alerted resets the armed state.
-        assert_eq!(low_battery_transition(true, 15, true, 20), (false, false));
+        assert_eq!(low_battery_transition(false, 5, true, 10), (false, false));
+        assert_eq!(low_battery_transition(true, 5, true, 10), (false, false));
     }
 
-    /// Just above the threshold is not low: no arm, no alert.
     #[test]
     fn low_battery_alert_does_not_fire_just_above_threshold() {
-        assert_eq!(low_battery_transition(false, 21, false, 20), (false, false));
+        assert_eq!(low_battery_transition(false, 11, false, 10), (false, false));
+    }
+
+    #[test]
+    fn high_threshold_hysteresis_caps_recovery_at_one_hundred() {
+        assert_eq!(low_battery_transition(true, 100, false, 99), (false, false));
+        assert_eq!(low_battery_transition(true, 100, false, 100), (true, false));
+        assert_eq!(low_battery_transition(true, 100, true, 100), (false, false));
     }
 }

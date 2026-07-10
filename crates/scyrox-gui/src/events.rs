@@ -50,5 +50,6 @@ pub async fn handle_event(event: Event) -> Option<AppEvent> {
             debug!("settings changed event");
             Some(AppEvent::SettingsChanged)
         }
+        Event::DaemonConfigChanged(_) => None,
     }
 }

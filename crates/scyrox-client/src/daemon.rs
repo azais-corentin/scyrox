@@ -1,6 +1,6 @@
 //! gRPC client for connecting to the scyroxd daemon.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use async_trait::async_trait;
 use hyper_util::rt::TokioIo;
 use interprocess::local_socket::GenericFilePath;
@@ -15,16 +15,19 @@ use scyrox_proto::scyrox_client::ScyroxClient;
 use scyrox_proto::{
     ApplyProfileRequest, DeleteProfileRequest, Empty, GetProfileRequest,
     LiftOffDistance as ProtoLod, PollingRate as ProtoRate, SetBoolRequest,
-    SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetPollingRateRequest,
-    SetSleepTimeoutRequest,
+    SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetLowBatteryThresholdRequest,
+    SetPollingRateRequest, SetSleepTimeoutRequest,
 };
 
-use crate::{Backend, DaemonInfo, ProfileInfo};
+use crate::{Backend, DaemonConfig, DaemonInfo, ProfileInfo};
 
 /// Client that connects to the scyroxd daemon via gRPC over IPC.
 pub struct DaemonClient {
     client: Mutex<ScyroxClient<Channel>>,
 }
+
+/// Event stream returned by [`DaemonClient::watch_events`].
+pub type EventStream = tonic::codec::Streaming<scyrox_proto::Event>;
 
 impl DaemonClient {
     /// Connect to the daemon.
@@ -68,8 +71,30 @@ impl DaemonClient {
         Ok(client.get_daemon_info(Empty {}).await?.into_inner())
     }
 
+    /// Get the daemon's effective configuration.
+    pub async fn get_daemon_config(&self) -> Result<DaemonConfig> {
+        let mut client = self.client.lock().await;
+        let response = client.get_daemon_config(Empty {}).await?.into_inner();
+        DaemonConfig::try_from(response).context("daemon returned invalid configuration")
+    }
+
+    /// Set and persist the daemon's low-battery threshold.
+    pub async fn set_low_battery_threshold(&self, percentage: u8) -> Result<()> {
+        ensure!(
+            percentage <= 100,
+            "low_battery_threshold must be between 0 and 100"
+        );
+        let mut client = self.client.lock().await;
+        client
+            .set_low_battery_threshold(SetLowBatteryThresholdRequest {
+                percentage: percentage as u32,
+            })
+            .await?;
+        Ok(())
+    }
+
     /// Subscribe to the daemon event stream.
-    pub async fn watch_events(&self) -> Result<tonic::codec::Streaming<scyrox_proto::Event>> {
+    pub async fn watch_events(&self) -> Result<EventStream> {
         let mut client = self.client.lock().await;
         let response = client.watch_events(scyrox_proto::Empty {}).await?;
         Ok(response.into_inner())

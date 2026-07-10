@@ -38,8 +38,10 @@ service Scyrox {
   rpc WatchEvents (Empty) returns (stream Event);
   
   // Daemon management
-  rpc GetDaemonInfo (Empty) returns (DaemonInfo);
-  rpc Shutdown      (Empty) returns (Empty     );
+  rpc GetDaemonInfo          (Empty                        ) returns (DaemonInfo  );
+  rpc GetDaemonConfig        (Empty                        ) returns (DaemonConfig);
+  rpc SetLowBatteryThreshold (SetLowBatteryThresholdRequest) returns (Empty       );
+  rpc Shutdown               (Empty                        ) returns (Empty       );
 }
 
 // =============================================================================
@@ -173,11 +175,12 @@ message SetDefaultProfileRequest {
 // =============================================================================
 message Event {
   oneof event {
-    BatteryUpdate    battery_update    = 1;
-    ConnectionChange connection_change = 2;
-    LowBatteryAlert  low_battery_alert = 3;
-    ProfileApplied   profile_applied   = 4;
-    SettingsChanged  settings_changed  = 5;
+    BatteryUpdate       battery_update        = 1;
+    ConnectionChange    connection_change     = 2;
+    LowBatteryAlert     low_battery_alert     = 3;
+    ProfileApplied      profile_applied       = 4;
+    SettingsChanged     settings_changed      = 5;
+    DaemonConfigChanged daemon_config_changed = 6;
   }
 }
 
@@ -199,6 +202,8 @@ message ConnectionChange {
   ConnectionMode mode      = 2;
 }
 
+// Emitted once per discharging low-battery episode. The daemon re-arms after
+// charging or five percentage points of recovery.
 message LowBatteryAlert {
   uint32 percentage = 1;
 }
@@ -206,6 +211,10 @@ message LowBatteryAlert {
 message ProfileApplied {
   string profile_id   = 1;
   string profile_name = 2;
+}
+
+message DaemonConfigChanged {
+  DaemonConfig config = 1;
 }
 
 // =============================================================================
@@ -216,5 +225,15 @@ message DaemonInfo {
            uint64       uptime_seconds    = 2;
            DeviceStatus device_status     = 3;
   optional string       active_profile_id = 4;
+}
+
+// Effective daemon-owned configuration. The low-battery threshold defaults to
+// 10 percent when not explicitly configured.
+message DaemonConfig {
+  uint32 low_battery_threshold = 1;
+}
+
+message SetLowBatteryThresholdRequest {
+  uint32 percentage = 1;
 }
 

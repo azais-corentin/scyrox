@@ -24,6 +24,8 @@ use crate::state::TrayState;
 enum UserEvent {
     /// A new tray state produced by the daemon worker.
     State(TrayState),
+    /// The daemon-owned low-battery threshold changed.
+    LowBatteryThreshold(u8),
     /// A context-menu activation.
     Menu(MenuEvent),
 }
@@ -58,6 +60,7 @@ fn main() -> Result<()> {
     let mut battery_item: Option<MenuItem> = None;
     let mut quit_item: Option<MenuItem> = None;
     let mut last_state: Option<TrayState> = None;
+    let mut low_battery_threshold: Option<u8> = None;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -79,7 +82,7 @@ fn main() -> Result<()> {
                 match TrayIconBuilder::new()
                     .with_menu(Box::new(menu))
                     .with_tooltip("Scyrox — connecting…")
-                    .with_icon(icon::render(&TrayState::DaemonDown, &font))
+                    .with_icon(icon::render(&TrayState::DaemonDown, &font, None))
                     .build()
                 {
                     Ok(tray) => tray_icon = Some(tray),
@@ -103,11 +106,25 @@ fn main() -> Result<()> {
                     last_state = Some(new_state);
 
                     if let Some(tray) = &tray_icon {
-                        let _ = tray.set_icon(Some(icon::render(&new_state, &font)));
+                        let _ = tray.set_icon(Some(icon::render(
+                            &new_state,
+                            &font,
+                            low_battery_threshold,
+                        )));
                         let _ = tray.set_tooltip(Some(state::tooltip(&new_state)));
                     }
                     if let Some(item) = &battery_item {
                         item.set_text(state::menu_line(&new_state));
+                    }
+                }
+            }
+
+            Event::UserEvent(UserEvent::LowBatteryThreshold(threshold)) => {
+                if low_battery_threshold != Some(threshold) {
+                    low_battery_threshold = Some(threshold);
+                    if let (Some(tray), Some(state)) = (&tray_icon, last_state) {
+                        let _ =
+                            tray.set_icon(Some(icon::render(&state, &font, low_battery_threshold)));
                     }
                 }
             }

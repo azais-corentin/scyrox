@@ -9,12 +9,12 @@
 mod daemon;
 mod direct;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate};
 use serde::Serialize;
 
-pub use daemon::DaemonClient;
+pub use daemon::{DaemonClient, EventStream};
 pub use direct::DirectBackend;
 
 /// Unified interface for mouse operations.
@@ -65,4 +65,59 @@ pub struct DaemonInfo {
     pub version: String,
     pub uptime_seconds: u64,
     pub connected: bool,
+}
+
+/// Effective daemon configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DaemonConfig {
+    pub low_battery_threshold: u8,
+}
+
+impl TryFrom<scyrox_proto::DaemonConfig> for DaemonConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(config: scyrox_proto::DaemonConfig) -> Result<Self> {
+        ensure!(
+            config.low_battery_threshold <= 100,
+            "low_battery_threshold must be between 0 and 100"
+        );
+        Ok(Self {
+            low_battery_threshold: config.low_battery_threshold as u8,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_config_accepts_percentage_boundaries() {
+        for low_battery_threshold in [0, 100] {
+            let config = DaemonConfig::try_from(scyrox_proto::DaemonConfig {
+                low_battery_threshold,
+            })
+            .unwrap();
+
+            assert_eq!(
+                config,
+                DaemonConfig {
+                    low_battery_threshold: low_battery_threshold as u8,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_config_rejects_percentage_above_one_hundred() {
+        let error = DaemonConfig::try_from(scyrox_proto::DaemonConfig {
+            low_battery_threshold: 101,
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "low_battery_threshold must be between 0 and 100"
+        );
+    }
 }

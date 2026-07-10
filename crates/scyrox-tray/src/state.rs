@@ -1,12 +1,5 @@
 //! Tray state model and pure text-formatting helpers.
 
-/// Low-battery threshold (percentage, inclusive).
-///
-/// Mirrors the daemon default in `crates/scyroxd/src/config.rs`
-/// (`default_low_battery_threshold()` returns 20). Hardcoded here because the
-/// daemon does not currently expose the configured threshold over gRPC.
-pub const LOW_BATTERY_THRESHOLD: u8 = 20;
-
 /// Observable state of the tray, driven by the daemon event worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayState {
@@ -64,14 +57,14 @@ pub fn menu_line(state: &TrayState) -> String {
 /// Whether the state should be rendered as a low-battery warning.
 ///
 /// A charging mouse is never "low".
-pub fn is_low(state: &TrayState) -> bool {
+pub fn is_low(state: &TrayState, low_battery_threshold: u8) -> bool {
     matches!(
         state,
         TrayState::Battery {
             percentage,
             charging: false,
             ..
-        } if *percentage <= LOW_BATTERY_THRESHOLD
+        } if *percentage <= low_battery_threshold
     )
 }
 
@@ -155,31 +148,39 @@ mod tests {
 
     #[test]
     fn is_low_boundary() {
-        // 20 -> true (inclusive), 21 -> false.
-        assert!(is_low(&TrayState::Battery {
-            percentage: 20,
-            voltage_mv: 3600,
-            charging: false,
-        }));
-        assert!(!is_low(&TrayState::Battery {
-            percentage: 21,
-            voltage_mv: 3600,
-            charging: false,
-        }));
+        assert!(is_low(
+            &TrayState::Battery {
+                percentage: 10,
+                voltage_mv: 3600,
+                charging: false,
+            },
+            10,
+        ));
+        assert!(!is_low(
+            &TrayState::Battery {
+                percentage: 11,
+                voltage_mv: 3600,
+                charging: false,
+            },
+            10,
+        ));
     }
 
     #[test]
     fn is_low_charging_never_low() {
-        assert!(!is_low(&TrayState::Battery {
-            percentage: 20,
-            voltage_mv: 3600,
-            charging: true,
-        }));
+        assert!(!is_low(
+            &TrayState::Battery {
+                percentage: 10,
+                voltage_mv: 3600,
+                charging: true,
+            },
+            10,
+        ));
     }
 
     #[test]
     fn is_low_non_battery_states() {
-        assert!(!is_low(&TrayState::DaemonDown));
-        assert!(!is_low(&TrayState::Disconnected));
+        assert!(!is_low(&TrayState::DaemonDown, 10));
+        assert!(!is_low(&TrayState::Disconnected, 10));
     }
 }

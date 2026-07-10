@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::Serialize;
 
-use crate::cli::{DaemonAction, DaemonCommand, OutputFormat};
+use crate::cli::{
+    DaemonAction, DaemonCommand, DaemonConfigAction, DaemonConfigCommand, OutputFormat,
+};
 use crate::output::Output;
 use scyrox_client::DaemonClient;
 
@@ -20,7 +22,29 @@ pub async fn run(cmd: &DaemonCommand, output: &Output) -> Result<()> {
         DaemonAction::Stop => stop_daemon(output).await,
         DaemonAction::Status => show_status(output).await,
         DaemonAction::Restart => restart_daemon(output).await,
+        DaemonAction::Config(config) => configure_daemon(config, output).await,
     }
+}
+
+async fn configure_daemon(cmd: &DaemonConfigCommand, output: &Output) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    match &cmd.action {
+        DaemonConfigAction::Get => {
+            let config = client.get_daemon_config().await?;
+            output.print_daemon_config(&config);
+        }
+        DaemonConfigAction::Set {
+            low_battery_threshold,
+        } => {
+            client
+                .set_low_battery_threshold(*low_battery_threshold)
+                .await?;
+            output.print_success(&format!(
+                "Low battery threshold set to {low_battery_threshold}%"
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn start_daemon(foreground: bool, output: &Output) -> Result<()> {

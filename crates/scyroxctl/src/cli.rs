@@ -252,4 +252,24 @@ pub enum DaemonAction {
     Status,
     /// Restart the daemon
     Restart,
+    /// Manage daemon configuration
+    Config(DaemonConfigCommand),
+}
+
+#[derive(Parser)]
+pub struct DaemonConfigCommand {
+    #[command(subcommand)]
+    pub action: DaemonConfigAction,
+}
+
+#[derive(Subcommand)]
+pub enum DaemonConfigAction {
+    /// Show daemon configuration
+    Get,
+    /// Update daemon configuration
+    Set {
+        /// Low-battery alert threshold as a percentage
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+        low_battery_threshold: u8,
+    },
 }

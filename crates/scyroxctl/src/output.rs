@@ -7,7 +7,7 @@ use scyrox::{BatteryStatus, FirmwareInfo, MouseConfig};
 use serde::Serialize;
 
 use crate::cli::OutputFormat;
-use scyrox_client::{DaemonInfo, ProfileInfo};
+use scyrox_client::{DaemonConfig, DaemonInfo, ProfileInfo};
 
 /// Print the common configuration fields with the given indent.
 fn print_config_fields(config: &MouseConfig, indent: &str) {
@@ -198,6 +198,19 @@ impl Output {
             }
             OutputFormat::Json => {
                 println!("{}", serde_json::to_string(profile).unwrap_or_default());
+            }
+        }
+    }
+
+    /// Print daemon configuration.
+    pub fn print_daemon_config(&self, config: &DaemonConfig) {
+        match self.format {
+            OutputFormat::Text => {
+                println!("Daemon Configuration:");
+                println!("  Low Battery Threshold: {}%", config.low_battery_threshold);
+            }
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string(config).unwrap_or_default());
             }
         }
     }
