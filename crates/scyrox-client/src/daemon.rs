@@ -1,5 +1,7 @@
 //! gRPC client for connecting to the scyroxd daemon.
 
+use std::path::Path;
+
 use anyhow::{Context, Result, anyhow, ensure};
 use async_trait::async_trait;
 use hyper_util::rt::TokioIo;
@@ -14,9 +16,9 @@ use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingR
 use scyrox_proto::scyrox_client::ScyroxClient;
 use scyrox_proto::{
     ApplyProfileRequest, DeleteProfileRequest, Empty, GetProfileRequest,
-    LiftOffDistance as ProtoLod, PollingRate as ProtoRate, SetBoolRequest,
-    SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetLowBatteryThresholdRequest,
-    SetPollingRateRequest, SetSleepTimeoutRequest,
+    LiftOffDistance as ProtoLod, PollingRate as ProtoRate, SetBatteryLogPathRequest,
+    SetBoolRequest, SetDefaultProfileRequest, SetLiftOffDistanceRequest,
+    SetLowBatteryThresholdRequest, SetPollingRateRequest, SetSleepTimeoutRequest,
 };
 
 use crate::{Backend, DaemonConfig, DaemonInfo, ProfileInfo};
@@ -89,6 +91,22 @@ impl DaemonClient {
             .set_low_battery_threshold(SetLowBatteryThresholdRequest {
                 percentage: percentage as u32,
             })
+            .await?;
+        Ok(())
+    }
+
+    /// Set, replace, or disable the daemon battery log destination.
+    pub async fn set_battery_log_path(&self, path: Option<&Path>) -> Result<()> {
+        let path = path
+            .map(|path| {
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow!("battery_log_path must be valid UTF-8"))
+            })
+            .transpose()?;
+        let mut client = self.client.lock().await;
+        client
+            .set_battery_log_path(SetBatteryLogPathRequest { path })
             .await?;
         Ok(())
     }

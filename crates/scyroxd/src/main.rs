@@ -8,6 +8,7 @@
 //! - Event streaming (battery, connection status)
 //! - Auto-apply profiles on device connection
 
+mod battery_log;
 mod config;
 mod fs_util;
 mod hotplug;

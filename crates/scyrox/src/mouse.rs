@@ -541,22 +541,14 @@ impl Mouse {
         Ok(config)
     }
 
-    /// Get battery status.
-    ///
-    /// Response format (with report ID at byte 0):
-    /// - Byte 0: Report ID (0x08)
-    /// - Byte 1: Command ID (0x04)
-    /// - Byte 2: Status (0x00 = success)
-    /// - Byte 6: Battery level (0-100 percentage)
-    /// - Byte 7: Charging status (0x01 = charging, 0x00 = not charging)
-    /// - Byte 8: Voltage high byte
-    /// - Byte 9: Voltage low byte
-    #[instrument(skip(self))]
-    pub async fn get_battery(&self) -> Result<BatteryStatus> {
+    async fn query_battery_sample(&self) -> Result<BatterySample> {
         debug!("getting battery status");
         let cmd = build_battery_cmd();
         let response = self.send_command(&cmd).await?;
+        Self::decode_battery_response(response)
+    }
 
+    fn decode_battery_response(response: Vec<u8>) -> Result<BatterySample> {
         Self::ensure_response_len(&response, 10)?;
 
         if response[1] != CMD_BATTERY {
@@ -573,16 +565,45 @@ impl Mouse {
 
         Self::check_response_status(&response)?;
 
+        let device_percentage = response[6];
         let charging = response[7] == 0x01;
         let voltage_mv = u16::from_be_bytes([response[8], response[9]]);
         let percentage = crate::protocol::voltage_to_percentage_table(voltage_mv);
 
-        debug!(voltage_mv, percentage, charging, "battery status retrieved");
-        Ok(BatteryStatus {
+        debug!(
             voltage_mv,
-            percentage,
-            charging,
+            device_percentage, percentage, charging, "battery status retrieved"
+        );
+        Ok(BatterySample {
+            status: BatteryStatus {
+                voltage_mv,
+                percentage,
+                charging,
+            },
+            device_percentage,
+            raw_response: response,
         })
+    }
+
+    /// Get battery status.
+    #[instrument(skip(self))]
+    pub async fn get_battery(&self) -> Result<BatteryStatus> {
+        Ok(self.query_battery_sample().await?.status)
+    }
+
+    /// Get battery status together with the complete device response.
+    ///
+    /// Response format (with report ID at byte 0):
+    /// - Byte 0: Report ID (0x08)
+    /// - Byte 1: Command ID (0x04)
+    /// - Byte 2: Status (0x00 = success)
+    /// - Byte 6: Device-reported battery level (0-100 percentage)
+    /// - Byte 7: Charging status (0x01 = charging, 0x00 = not charging)
+    /// - Byte 8: Voltage high byte
+    /// - Byte 9: Voltage low byte
+    #[instrument(skip(self))]
+    pub async fn get_battery_sample(&self) -> Result<BatterySample> {
+        self.query_battery_sample().await
     }
 
     /// Get firmware version information.
@@ -1617,5 +1638,37 @@ mod tests {
     #[test]
     fn ensure_response_len_accepts_exact_length() {
         assert!(Mouse::ensure_response_len(&[0u8; 10], 10).is_ok());
+    }
+
+    #[test]
+    fn decode_battery_response_preserves_device_percentage_and_raw_packet() {
+        let response = vec![
+            REPORT_ID,
+            CMD_BATTERY,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            77,
+            0x01,
+            0x0e,
+            0x74,
+        ];
+        let expected_response = response.clone();
+        let expected_percentage = voltage_to_percentage_table(3700);
+        assert_ne!(expected_percentage, 77);
+
+        let sample = Mouse::decode_battery_response(response).unwrap();
+
+        assert_eq!(
+            (
+                sample.device_percentage,
+                sample.status.percentage,
+                sample.status.voltage_mv,
+                sample.status.charging,
+                sample.raw_response,
+            ),
+            (77, expected_percentage, 3700, true, expected_response),
+        );
     }
 }

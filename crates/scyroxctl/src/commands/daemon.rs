@@ -6,7 +6,8 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::cli::{
-    DaemonAction, DaemonCommand, DaemonConfigAction, DaemonConfigCommand, OutputFormat,
+    DaemonAction, DaemonCommand, DaemonConfigAction, DaemonConfigCommand, DaemonConfigSetAction,
+    DaemonConfigUnsetAction, OutputFormat,
 };
 use crate::output::Output;
 use scyrox_client::DaemonClient;
@@ -28,16 +29,22 @@ async fn configure_daemon(cmd: &DaemonConfigCommand, output: &Output) -> Result<
             let config = client.get_daemon_config().await?;
             output.print_daemon_config(&config);
         }
-        DaemonConfigAction::Set {
-            low_battery_threshold,
-        } => {
-            client
-                .set_low_battery_threshold(*low_battery_threshold)
-                .await?;
-            output.print_success(&format!(
-                "Low battery threshold set to {low_battery_threshold}%"
-            ));
-        }
+        DaemonConfigAction::Set { setting } => match setting {
+            DaemonConfigSetAction::LowBatteryThreshold { percentage } => {
+                client.set_low_battery_threshold(*percentage).await?;
+                output.print_success(&format!("Low battery threshold set to {percentage}%"));
+            }
+            DaemonConfigSetAction::BatteryLogPath { path } => {
+                client.set_battery_log_path(Some(path)).await?;
+                output.print_success(&format!("Battery log path set to {}", path.display()));
+            }
+        },
+        DaemonConfigAction::Unset { setting } => match setting {
+            DaemonConfigUnsetAction::BatteryLogPath => {
+                client.set_battery_log_path(None).await?;
+                output.print_success("Battery logging disabled");
+            }
+        },
     }
     Ok(())
 }

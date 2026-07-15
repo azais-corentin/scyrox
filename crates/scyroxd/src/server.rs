@@ -13,18 +13,22 @@ use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, instrument, warn};
 
-use scyrox::{Mouse, MouseError};
+use scyrox::{BatteryStatus, Mouse, MouseError};
 use scyrox_proto::{
     ApplyProfileRequest, BatteryStatus as ProtoBattery, BatteryUpdate, ConnectionChange,
     ConnectionMode, CreateProfileRequest, DaemonConfig as ProtoDaemonConfig, DaemonConfigChanged,
     DaemonInfo, DeleteProfileRequest, DeviceStatus, Empty, Event, FirmwareInfo as ProtoFirmware,
     GetProfileRequest, LiftOffDistance as ProtoLod, LowBatteryAlert, PollingRate as ProtoRate,
-    Profile, ProfileApplied, ProfileList, Scyrox, SetBoolRequest, SetDefaultProfileRequest,
-    SetLiftOffDistanceRequest, SetLowBatteryThresholdRequest, SetPollingRateRequest,
-    SetSleepTimeoutRequest, SetSleepTimeoutResponse, SettingsChanged, UpdateProfileRequest, event,
-    hz_to_proto_polling_rate, mm_to_proto_lod,
+    Profile, ProfileApplied, ProfileList, Scyrox, SetBatteryLogPathRequest, SetBoolRequest,
+    SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetLowBatteryThresholdRequest,
+    SetPollingRateRequest, SetSleepTimeoutRequest, SetSleepTimeoutResponse, SettingsChanged,
+    UpdateProfileRequest, event, hz_to_proto_polling_rate, mm_to_proto_lod,
 };
 
+use crate::battery_log::{
+    BatteryLifecycleSource, BatteryLogOpenError, BatteryLogger, BatteryRefreshSource,
+    PreparedBatteryLogRecord,
+};
 use crate::config::DaemonConfig;
 use crate::hotplug::DeviceEvent;
 use crate::profiles::{ProfileConfig, ProfileStore};
@@ -64,6 +68,10 @@ pub struct ScyroxService {
     config: Arc<Mutex<DaemonConfig>>,
     /// Path used to persist daemon configuration.
     config_path: PathBuf,
+    /// Directory used to resolve relative daemon configuration paths.
+    config_dir: PathBuf,
+    /// Append-only battery observation logger.
+    battery_logger: BatteryLogger,
     /// Daemon start time.
     start_time: Instant,
     /// Currently active profile ID (the profile last applied to the mouse).
@@ -95,11 +103,21 @@ impl ScyroxService {
         let (client_event_tx, _) = broadcast::channel(32);
 
         let config_path = DaemonConfig::path(&dirs);
+        let config_dir = dirs.config_dir().to_path_buf();
+        let config_temp_path = config_path.with_extension("toml.tmp");
+        let resolved_battery_log_path = config.resolved_battery_log_path(&config_dir);
+        let battery_logger = BatteryLogger::new(
+            resolved_battery_log_path.as_deref(),
+            &[&config_path, &config_temp_path],
+        )
+        .await?;
         let service = Self {
             mouse: Arc::new(Mutex::new(None)),
             profiles: ProfileStore::new(&dirs),
             config: Arc::new(Mutex::new(config)),
             config_path,
+            config_dir,
+            battery_logger,
             start_time: Instant::now(),
             active_profile_id: Arc::new(Mutex::new(None)),
             shutdown_tx,
@@ -109,6 +127,10 @@ impl ScyroxService {
         match Mouse::open().await {
             Ok(m) => {
                 info!("Mouse connected");
+                service
+                    .battery_logger
+                    .log_device_connected(BatteryLifecycleSource::Startup, m.connection_mode())
+                    .await;
                 service.spawn_notification_forwarder(&m);
                 *service.mouse.lock().await = Some(m);
             }
@@ -142,7 +164,12 @@ impl ScyroxService {
 
     /// Spawn a task to forward mouse notifications to clients.
     fn spawn_notification_forwarder(&self, mouse: &Mouse) {
-        spawn_notification_forwarder(mouse, Arc::clone(&self.mouse), self.client_event_tx.clone());
+        spawn_notification_forwarder(
+            mouse,
+            Arc::clone(&self.mouse),
+            self.client_event_tx.clone(),
+            self.battery_logger.clone(),
+        );
     }
 
     /// Invalidate the current mouse connection.
@@ -223,6 +250,7 @@ impl ScyroxService {
         let client_event_tx = self.client_event_tx.clone();
         let profiles = self.profiles.clone();
         let config = self.config.clone();
+        let battery_logger = self.battery_logger.clone();
 
         async move {
             info!("device event handler started");
@@ -239,6 +267,9 @@ impl ScyroxService {
 
                 match event {
                     DeviceEvent::Connected { mode } => {
+                        battery_logger
+                            .log_device_connected(BatteryLifecycleSource::Hotplug, mode)
+                            .await;
                         info!(?mode, "device connected");
 
                         match Mouse::open().await {
@@ -247,6 +278,7 @@ impl ScyroxService {
                                     &m,
                                     Arc::clone(&mouse),
                                     client_event_tx.clone(),
+                                    battery_logger.clone(),
                                 );
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
@@ -268,6 +300,8 @@ impl ScyroxService {
                                 spawn_battery_fetch_with_retry(
                                     Arc::clone(&mouse),
                                     client_event_tx.clone(),
+                                    battery_logger.clone(),
+                                    BatteryRefreshSource::DeviceConnected,
                                 );
 
                                 let config_snapshot = config.lock().await.clone();
@@ -287,6 +321,9 @@ impl ScyroxService {
                         }
                     }
                     DeviceEvent::Disconnected => {
+                        battery_logger
+                            .log_device_disconnected(BatteryLifecycleSource::Hotplug)
+                            .await;
                         info!("device disconnected");
                         {
                             let mut guard = mouse.lock().await;
@@ -304,6 +341,9 @@ impl ScyroxService {
                         });
                     }
                     DeviceEvent::ModeChanged { from, to } => {
+                        battery_logger
+                            .log_connection_mode_changed(BatteryLifecycleSource::Hotplug, from, to)
+                            .await;
                         info!(?from, ?to, "connection mode changed");
                         {
                             let mut guard = mouse.lock().await;
@@ -316,6 +356,7 @@ impl ScyroxService {
                                     &m,
                                     Arc::clone(&mouse),
                                     client_event_tx.clone(),
+                                    battery_logger.clone(),
                                 );
                                 let mut guard = mouse.lock().await;
                                 *guard = Some(m);
@@ -337,6 +378,8 @@ impl ScyroxService {
                                 spawn_battery_fetch_with_retry(
                                     Arc::clone(&mouse),
                                     client_event_tx.clone(),
+                                    battery_logger.clone(),
+                                    BatteryRefreshSource::ModeChanged,
                                 );
 
                                 let config_snapshot = config.lock().await.clone();
@@ -373,6 +416,7 @@ impl ScyroxService {
         let mouse = Arc::clone(&self.mouse);
         let client_event_tx = self.client_event_tx.clone();
         let config = Arc::clone(&self.config);
+        let battery_logger = self.battery_logger.clone();
 
         async move {
             let interval_secs = config.lock().await.battery_poll_interval_secs;
@@ -393,16 +437,22 @@ impl ScyroxService {
                 ticker.tick().await;
                 let threshold = config.lock().await.low_battery_threshold;
 
-                let battery = {
-                    let guard = mouse.lock().await;
-                    let Some(m) = guard.as_ref() else {
-                        debug!("battery poll skipped: mouse disconnected");
-                        continue;
-                    };
-                    m.get_battery().await
+                let Some(ObservedBatteryRefresh { result, log_record }) = observe_battery_refresh(
+                    &mouse,
+                    &battery_logger,
+                    BatteryRefreshSource::Periodic,
+                    None,
+                )
+                .await
+                else {
+                    debug!("battery poll skipped: mouse disconnected");
+                    continue;
                 };
+                if let Some(record) = log_record {
+                    battery_logger.write_record(record).await;
+                }
 
-                match battery {
+                match result {
                     Ok(battery) => {
                         debug!(
                             percentage = battery.percentage,
@@ -440,6 +490,41 @@ impl ScyroxService {
             }
         }
     }
+}
+
+struct ObservedBatteryRefresh {
+    result: scyrox::Result<BatteryStatus>,
+    log_record: Option<PreparedBatteryLogRecord>,
+}
+
+async fn observe_battery_refresh(
+    mouse: &Arc<Mutex<Option<Mouse>>>,
+    logger: &BatteryLogger,
+    source: BatteryRefreshSource,
+    attempt: Option<u8>,
+) -> Option<ObservedBatteryRefresh> {
+    let sample = {
+        let guard = mouse.lock().await;
+        let mouse = guard.as_ref()?;
+        mouse.get_battery_sample().await
+    };
+
+    Some(match sample {
+        Ok(sample) => {
+            let log_record = logger.prepare_sample_record(source, attempt, &sample);
+            ObservedBatteryRefresh {
+                result: Ok(sample.status),
+                log_record,
+            }
+        }
+        Err(error) => {
+            let log_record = logger.prepare_refresh_error_record(source, attempt, &error);
+            ObservedBatteryRefresh {
+                result: Err(error),
+                log_record,
+            }
+        }
+    })
 }
 
 /// Take and gracefully shut down the current mouse connection, if any.
@@ -495,6 +580,7 @@ fn spawn_notification_forwarder(
     mouse: &Mouse,
     mouse_arc: Arc<Mutex<Option<Mouse>>>,
     client_event_tx: broadcast::Sender<Event>,
+    battery_logger: BatteryLogger,
 ) {
     let notification_rx = mouse.subscribe_notifications();
 
@@ -518,18 +604,30 @@ fn spawn_notification_forwarder(
                         if flags.battery_changed() {
                             let mouse_arc = mouse_arc.clone();
                             let tx = client_event_tx.clone();
+                            let battery_logger = battery_logger.clone();
                             tokio::spawn(async move {
-                                let guard = mouse_arc.lock().await;
-                                if let Some(m) = guard.as_ref() {
-                                    match m.get_battery().await {
-                                        Ok(battery) => {
-                                            let _ = tx.send(battery_update_event(&battery));
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "failed to fetch battery after change notification: {e}"
-                                            );
-                                        }
+                                let Some(ObservedBatteryRefresh { result, log_record }) =
+                                    observe_battery_refresh(
+                                        &mouse_arc,
+                                        &battery_logger,
+                                        BatteryRefreshSource::BatteryChanged,
+                                        None,
+                                    )
+                                    .await
+                                else {
+                                    return;
+                                };
+                                if let Some(record) = log_record {
+                                    battery_logger.write_record(record).await;
+                                }
+                                match result {
+                                    Ok(battery) => {
+                                        let _ = tx.send(battery_update_event(&battery));
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            "failed to fetch battery after change notification: {error}"
+                                        );
                                     }
                                 }
                             });
@@ -562,30 +660,37 @@ fn spawn_notification_forwarder(
 ///
 /// USB devices often aren't ready for HID commands immediately after hotplug
 /// enumeration, so we wait briefly and retry up to 3 times.
-fn spawn_battery_fetch_with_retry(mouse: Arc<Mutex<Option<Mouse>>>, tx: broadcast::Sender<Event>) {
+fn spawn_battery_fetch_with_retry(
+    mouse: Arc<Mutex<Option<Mouse>>>,
+    tx: broadcast::Sender<Event>,
+    battery_logger: BatteryLogger,
+    source: BatteryRefreshSource,
+) {
     tokio::spawn(async move {
         // Give device time to become ready after USB enumeration
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         for attempt in 1..=3 {
-            let guard = mouse.lock().await;
-            if let Some(m) = guard.as_ref() {
-                match m.get_battery().await {
-                    Ok(battery) => {
-                        let _ = tx.send(battery_update_event(&battery));
-                        return;
-                    }
-                    Err(e) => {
-                        warn!(attempt, "failed to fetch battery after reconnect: {e}");
-                        drop(guard);
-                        if attempt < 3 {
-                            tokio::time::sleep(Duration::from_millis(500)).await;
-                        }
-                    }
-                }
-            } else {
+            let Some(ObservedBatteryRefresh { result, log_record }) =
+                observe_battery_refresh(&mouse, &battery_logger, source, Some(attempt)).await
+            else {
                 // Mouse disconnected again before we could fetch
                 return;
+            };
+            if let Some(record) = log_record {
+                battery_logger.write_record(record).await;
+            }
+            match result {
+                Ok(battery) => {
+                    let _ = tx.send(battery_update_event(&battery));
+                    return;
+                }
+                Err(error) => {
+                    warn!(attempt, "failed to fetch battery after reconnect: {error}");
+                    if attempt < 3 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
             }
         }
     });
@@ -693,14 +798,39 @@ impl Scyrox for ScyroxService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<ProtoBattery>, Status> {
-        with_mouse!(self, |mouse| {
-            let battery = mouse.get_battery().await?;
-            Ok(ProtoBattery {
-                voltage_mv: battery.voltage_mv as u32,
-                percentage: battery.percentage as u32,
-                charging: battery.charging,
-            })
-        })
+        self.ensure_mouse().await?;
+        let Some(ObservedBatteryRefresh { result, log_record }) = observe_battery_refresh(
+            &self.mouse,
+            &self.battery_logger,
+            BatteryRefreshSource::Rpc,
+            None,
+        )
+        .await
+        else {
+            return Err(Status::unavailable(
+                "Mouse not connected. Please connect the device.",
+            ));
+        };
+
+        match result {
+            Ok(battery) => {
+                if let Some(record) = log_record {
+                    self.battery_logger.write_record(record).await;
+                }
+                Ok(Response::new(ProtoBattery {
+                    voltage_mv: battery.voltage_mv as u32,
+                    percentage: battery.percentage as u32,
+                    charging: battery.charging,
+                }))
+            }
+            Err(error) => {
+                let status = self.handle_mouse_error(error).await;
+                if let Some(record) = log_record {
+                    self.battery_logger.write_record(record).await;
+                }
+                Err(status)
+            }
+        }
     }
 
     #[instrument(skip(self, _request))]
@@ -1118,6 +1248,58 @@ impl Scyrox for ScyroxService {
         Ok(Response::new(Empty {}))
     }
 
+    #[instrument(skip(self, request))]
+    async fn set_battery_log_path(
+        &self,
+        request: Request<SetBatteryLogPathRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let battery_log_path = request.into_inner().path.map(PathBuf::from);
+        let mut config = self.config.lock().await;
+        if config.battery_log_path == battery_log_path {
+            return Ok(Response::new(Empty {}));
+        }
+
+        let mut candidate = config.clone();
+        candidate.battery_log_path = battery_log_path;
+        candidate
+            .validate()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+
+        let resolved_path = candidate.resolved_battery_log_path(&self.config_dir);
+        let config_temp_path = self.config_path.with_extension("toml.tmp");
+        let prepared = self
+            .battery_logger
+            .prepare(
+                resolved_path.as_deref(),
+                &[&self.config_path, &config_temp_path],
+            )
+            .await
+            .map_err(|error| match error {
+                BatteryLogOpenError::ReservedConfigPath => {
+                    Status::invalid_argument(error.to_string())
+                }
+                BatteryLogOpenError::Io { .. } => {
+                    Status::internal(format!("Failed to open battery log: {error}"))
+                }
+            })?;
+
+        candidate.save(&self.config_path).await.map_err(|error| {
+            Status::internal(format!("Failed to save daemon configuration: {error}"))
+        })?;
+
+        let proto_config = daemon_config_to_proto(&candidate);
+        self.battery_logger.replace(prepared).await;
+        *config = candidate;
+        let _ = self.client_event_tx.send(Event {
+            event: Some(event::Event::DaemonConfigChanged(DaemonConfigChanged {
+                config: Some(proto_config),
+            })),
+        });
+        drop(config);
+
+        Ok(Response::new(Empty {}))
+    }
+
     #[instrument(skip(self, _request))]
     async fn shutdown(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
         info!("Shutdown requested via RPC");
@@ -1134,6 +1316,10 @@ impl Scyrox for ScyroxService {
 fn daemon_config_to_proto(config: &DaemonConfig) -> ProtoDaemonConfig {
     ProtoDaemonConfig {
         low_battery_threshold: config.low_battery_threshold as u32,
+        battery_log_path: config
+            .battery_log_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
     }
 }
 
@@ -1243,9 +1429,12 @@ mod tests {
         }
     }
 
-    fn service_fixture(low_battery_threshold: u8) -> Option<(ScyroxService, TestDir)> {
+    async fn service_fixture(low_battery_threshold: u8) -> Option<(ScyroxService, TestDir)> {
         let dirs = ProjectDirs::from("dev", "scyrox", "scyroxd-test")?;
         let test_dir = TestDir::new();
+        let config_path = test_dir.config_path();
+        let config_dir = test_dir.path.clone();
+        let battery_logger = BatteryLogger::new(None, &[]).await.unwrap();
         let (client_event_tx, _) = broadcast::channel(32);
         let service = ScyroxService {
             mouse: Arc::new(Mutex::new(None)),
@@ -1254,7 +1443,9 @@ mod tests {
                 low_battery_threshold,
                 ..DaemonConfig::default()
             })),
-            config_path: test_dir.config_path(),
+            config_path,
+            config_dir,
+            battery_logger,
             start_time: Instant::now(),
             active_profile_id: Arc::new(Mutex::new(None)),
             shutdown_tx: tokio::sync::watch::channel(false).0,
@@ -1276,7 +1467,7 @@ mod tests {
     /// processing subsequent events.
     #[tokio::test]
     async fn device_event_handler_survives_lagged() {
-        let Some((service, _test_dir)) = service_fixture(10) else {
+        let Some((service, _test_dir)) = service_fixture(10).await else {
             eprintln!("skipping: ProjectDirs unavailable in this environment");
             return;
         };
@@ -1304,7 +1495,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_daemon_config_returns_threshold_without_mouse() {
-        let Some((service, _test_dir)) = service_fixture(37) else {
+        let Some((service, _test_dir)) = service_fixture(37).await else {
             eprintln!("skipping: ProjectDirs unavailable in this environment");
             return;
         };
@@ -1314,7 +1505,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_low_battery_threshold_persists_updates_and_broadcasts() {
-        let Some((service, _test_dir)) = service_fixture(10) else {
+        let Some((service, _test_dir)) = service_fixture(10).await else {
             eprintln!("skipping: ProjectDirs unavailable in this environment");
             return;
         };
@@ -1349,7 +1540,7 @@ mod tests {
 
     #[tokio::test]
     async fn setting_current_low_battery_threshold_is_noop() {
-        let Some((service, _test_dir)) = service_fixture(10) else {
+        let Some((service, _test_dir)) = service_fixture(10).await else {
             eprintln!("skipping: ProjectDirs unavailable in this environment");
             return;
         };
@@ -1371,7 +1562,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_low_battery_threshold_does_not_mutate_or_broadcast() {
-        let Some((service, _test_dir)) = service_fixture(10) else {
+        let Some((service, _test_dir)) = service_fixture(10).await else {
             eprintln!("skipping: ProjectDirs unavailable in this environment");
             return;
         };
@@ -1399,7 +1590,7 @@ mod tests {
 
     #[tokio::test]
     async fn persistence_failure_keeps_previous_threshold_and_suppresses_event() {
-        let Some((mut service, test_dir)) = service_fixture(10) else {
+        let Some((mut service, test_dir)) = service_fixture(10).await else {
             eprintln!("skipping: ProjectDirs unavailable in this environment");
             return;
         };
@@ -1424,6 +1615,243 @@ mod tests {
             events.try_recv(),
             Err(broadcast::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn battery_log_path_setting_is_live_persistent_and_reversible() {
+        let Some((service, test_dir)) = service_fixture(10).await else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        let configured_path = PathBuf::from("captures/battery.jsonl");
+        let resolved_path = test_dir.path.join(&configured_path);
+        let mut events = service.client_event_tx.subscribe();
+
+        service
+            .set_battery_log_path(Request::new(SetBatteryLogPathRequest {
+                path: Some(configured_path.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            service.config.lock().await.battery_log_path,
+            Some(configured_path.clone())
+        );
+        let persisted: DaemonConfig = toml::from_str(
+            &tokio::fs::read_to_string(&service.config_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted.battery_log_path, Some(configured_path.clone()));
+        let event = events.try_recv().unwrap();
+        let event_path = match event.event {
+            Some(event::Event::DaemonConfigChanged(change)) => {
+                change.config.unwrap().battery_log_path
+            }
+            other => panic!("unexpected event: {other:?}"),
+        };
+        assert_eq!(event_path, Some("captures/battery.jsonl".to_owned()));
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+
+        let sample = scyrox::BatterySample {
+            status: scyrox::BatteryStatus {
+                voltage_mv: 3700,
+                percentage: 42,
+                charging: false,
+            },
+            device_percentage: 41,
+            raw_response: vec![0x08, 0x04, 0x00],
+        };
+        let record = service
+            .battery_logger
+            .prepare_sample_record(crate::battery_log::BatteryRefreshSource::Rpc, None, &sample)
+            .unwrap();
+        service.battery_logger.write_record(record).await;
+        assert_eq!(
+            tokio::fs::read_to_string(&resolved_path)
+                .await
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+
+        service
+            .set_battery_log_path(Request::new(SetBatteryLogPathRequest { path: None }))
+            .await
+            .unwrap();
+
+        assert_eq!(service.config.lock().await.battery_log_path, None);
+        assert!(
+            service
+                .battery_logger
+                .prepare_sample_record(
+                    crate::battery_log::BatteryRefreshSource::Rpc,
+                    None,
+                    &sample,
+                )
+                .is_none()
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&resolved_path)
+                .await
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        let event = events.try_recv().unwrap();
+        match event.event {
+            Some(event::Event::DaemonConfigChanged(change)) => {
+                assert_eq!(change.config.unwrap().battery_log_path, None);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn battery_log_path_directory_target_rolls_back() {
+        let Some((service, test_dir)) = service_fixture(10).await else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        let mut events = service.client_event_tx.subscribe();
+
+        let status = service
+            .set_battery_log_path(Request::new(SetBatteryLogPathRequest {
+                path: Some(test_dir.path.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(service.config.lock().await.battery_log_path, None);
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn battery_log_path_reserved_alias_is_invalid_argument() {
+        let Some((service, _test_dir)) = service_fixture(10).await else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+
+        let status = service
+            .set_battery_log_path(Request::new(SetBatteryLogPathRequest {
+                path: Some(service.config_path.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            status.message(),
+            "battery_log_path must not alias daemon.toml or daemon.toml.tmp"
+        );
+        assert_eq!(service.config.lock().await.battery_log_path, None);
+    }
+
+    #[tokio::test]
+    async fn battery_log_path_persistence_failure_keeps_old_live_sink() {
+        let Some((service, test_dir)) = service_fixture(10).await else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        let old_path = test_dir.path.join("old.jsonl");
+        let new_path = test_dir.path.join("new.jsonl");
+        let mut events = service.client_event_tx.subscribe();
+        service
+            .set_battery_log_path(Request::new(SetBatteryLogPathRequest {
+                path: Some("old.jsonl".to_owned()),
+            }))
+            .await
+            .unwrap();
+        let _ = events.try_recv().unwrap();
+
+        tokio::fs::remove_file(&service.config_path).await.unwrap();
+        tokio::fs::create_dir(&service.config_path).await.unwrap();
+        let status = service
+            .set_battery_log_path(Request::new(SetBatteryLogPathRequest {
+                path: Some("new.jsonl".to_owned()),
+            }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(
+            service.config.lock().await.battery_log_path,
+            Some(PathBuf::from("old.jsonl"))
+        );
+        let sample = scyrox::BatterySample {
+            status: scyrox::BatteryStatus {
+                voltage_mv: 3700,
+                percentage: 42,
+                charging: false,
+            },
+            device_percentage: 41,
+            raw_response: vec![0x08, 0x04, 0x00],
+        };
+        let record = service
+            .battery_logger
+            .prepare_sample_record(crate::battery_log::BatteryRefreshSource::Rpc, None, &sample)
+            .unwrap();
+        service.battery_logger.write_record(record).await;
+
+        assert_eq!(
+            tokio::fs::read_to_string(old_path)
+                .await
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert_eq!(tokio::fs::read_to_string(new_path).await.unwrap(), "");
+        assert!(matches!(
+            events.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn battery_log_path_observer_skips_empty_mouse_slot_without_record() {
+        let Some((service, test_dir)) = service_fixture(10).await else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        service
+            .set_battery_log_path(Request::new(SetBatteryLogPathRequest {
+                path: Some("battery.jsonl".to_owned()),
+            }))
+            .await
+            .unwrap();
+
+        let observed = observe_battery_refresh(
+            &service.mouse,
+            &service.battery_logger,
+            BatteryRefreshSource::Rpc,
+            None,
+        )
+        .await;
+
+        assert!(observed.is_none());
+        assert_eq!(
+            tokio::fs::read_to_string(test_dir.path.join("battery.jsonl"))
+                .await
+                .unwrap(),
+            ""
+        );
     }
 
     #[test]

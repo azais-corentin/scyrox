@@ -46,10 +46,10 @@ pub use protocol::{
     verify_response_checksum,
 };
 pub use types::{
-    BatteryStatus, ConnectionMode, ConnectionType, DeviceInfo, DpiEffectMode, DpiEffectSettings,
-    DpiStage, DpiSwitchMode, FireKeyConfig, FirmwareInfo, HidKeyCode, KeyFunction, KeyFunctionType,
-    LiftOffDistance, LightMode, LightSettings, Macro, MacroCycleMode, MacroEvent,
-    MacroEventKeyType, MacroKeyConfig, MacroMouseButton, MediaKey, ModifierKey, MouseButton,
-    MouseConfig, Notification, PairStatus, PollingRate, ScrollWheelDirection, SensorMode,
-    ShortcutKey, ShortcutKeyEvent, ShortcutKeyType, SleepTime, StatusChangeFlags,
+    BatterySample, BatteryStatus, ConnectionMode, ConnectionType, DeviceInfo, DpiEffectMode,
+    DpiEffectSettings, DpiStage, DpiSwitchMode, FireKeyConfig, FirmwareInfo, HidKeyCode,
+    KeyFunction, KeyFunctionType, LiftOffDistance, LightMode, LightSettings, Macro, MacroCycleMode,
+    MacroEvent, MacroEventKeyType, MacroKeyConfig, MacroMouseButton, MediaKey, ModifierKey,
+    MouseButton, MouseConfig, Notification, PairStatus, PollingRate, ScrollWheelDirection,
+    SensorMode, ShortcutKey, ShortcutKeyEvent, ShortcutKeyType, SleepTime, StatusChangeFlags,
 };

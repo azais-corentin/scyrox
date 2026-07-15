@@ -140,13 +140,13 @@ fn test_daemon_config_get_shape_is_accepted() {
 }
 
 #[test]
-fn test_daemon_config_set_shape_is_accepted() {
+fn test_daemon_config_set_threshold_shape_is_accepted() {
     scyroxctl_raw()
         .args([
             "daemon",
             "config",
             "set",
-            "--low-battery-threshold",
+            "low-battery-threshold",
             "10",
             "--help",
         ])
@@ -156,10 +156,44 @@ fn test_daemon_config_set_shape_is_accepted() {
 }
 
 #[test]
+fn test_daemon_config_set_battery_log_path_shape_is_accepted() {
+    scyroxctl_raw()
+        .args([
+            "daemon",
+            "config",
+            "set",
+            "battery-log-path",
+            "captures/battery.jsonl",
+            "--help",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage:"));
+}
+
+#[test]
+fn test_daemon_config_unset_battery_log_path_shape_is_accepted() {
+    scyroxctl_raw()
+        .args(["daemon", "config", "unset", "battery-log-path", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage:"));
+}
+
+#[test]
 fn test_daemon_config_rejects_threshold_above_one_hundred() {
     scyroxctl_raw()
-        .args(["daemon", "config", "set", "--low-battery-threshold", "101"])
+        .args(["daemon", "config", "set", "low-battery-threshold", "101"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("101").and(predicate::str::contains("0..=100")));
+}
+
+#[test]
+fn test_daemon_config_rejects_removed_threshold_flag() {
+    scyroxctl_raw()
+        .args(["daemon", "config", "set", "--low-battery-threshold", "10"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--low-battery-threshold"));
 }

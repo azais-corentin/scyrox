@@ -208,6 +208,10 @@ impl Output {
             OutputFormat::Text => {
                 println!("Daemon Configuration:");
                 println!("  Low Battery Threshold: {}%", config.low_battery_threshold);
+                match &config.battery_log_path {
+                    Some(path) => println!("  Battery Log Path: {}", path.display()),
+                    None => println!("  Battery Log Path: disabled"),
+                }
             }
             OutputFormat::Json => {
                 println!("{}", serde_json::to_string(config).unwrap_or_default());

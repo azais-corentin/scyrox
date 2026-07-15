@@ -9,6 +9,8 @@
 mod daemon;
 mod direct;
 
+use std::path::PathBuf;
+
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use scyrox::{BatteryStatus, FirmwareInfo, LiftOffDistance, MouseConfig, PollingRate};
@@ -68,9 +70,10 @@ pub struct DaemonInfo {
 }
 
 /// Effective daemon configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DaemonConfig {
     pub low_battery_threshold: u8,
+    pub battery_log_path: Option<PathBuf>,
 }
 
 impl TryFrom<scyrox_proto::DaemonConfig> for DaemonConfig {
@@ -81,8 +84,12 @@ impl TryFrom<scyrox_proto::DaemonConfig> for DaemonConfig {
             config.low_battery_threshold <= 100,
             "low_battery_threshold must be between 0 and 100"
         );
+        if let Some(path) = config.battery_log_path.as_deref() {
+            ensure!(!path.is_empty(), "battery_log_path must not be empty");
+        }
         Ok(Self {
             low_battery_threshold: config.low_battery_threshold as u8,
+            battery_log_path: config.battery_log_path.map(PathBuf::from),
         })
     }
 }
@@ -96,6 +103,7 @@ mod tests {
         for low_battery_threshold in [0, 100] {
             let config = DaemonConfig::try_from(scyrox_proto::DaemonConfig {
                 low_battery_threshold,
+                battery_log_path: None,
             })
             .unwrap();
 
@@ -103,6 +111,7 @@ mod tests {
                 config,
                 DaemonConfig {
                     low_battery_threshold: low_battery_threshold as u8,
+                    battery_log_path: None,
                 }
             );
         }
@@ -112,6 +121,7 @@ mod tests {
     fn daemon_config_rejects_percentage_above_one_hundred() {
         let error = DaemonConfig::try_from(scyrox_proto::DaemonConfig {
             low_battery_threshold: 101,
+            battery_log_path: None,
         })
         .unwrap_err();
 
@@ -119,5 +129,40 @@ mod tests {
             error.to_string(),
             "low_battery_threshold must be between 0 and 100"
         );
+    }
+    #[test]
+    fn daemon_config_preserves_relative_battery_log_path() {
+        let config = DaemonConfig::try_from(scyrox_proto::DaemonConfig {
+            low_battery_threshold: 10,
+            battery_log_path: Some("captures/battery.jsonl".to_owned()),
+        })
+        .unwrap();
+
+        assert_eq!(
+            config.battery_log_path,
+            Some(PathBuf::from("captures/battery.jsonl"))
+        );
+    }
+
+    #[test]
+    fn daemon_config_preserves_disabled_battery_logging() {
+        let config = DaemonConfig::try_from(scyrox_proto::DaemonConfig {
+            low_battery_threshold: 10,
+            battery_log_path: None,
+        })
+        .unwrap();
+
+        assert_eq!(config.battery_log_path, None);
+    }
+
+    #[test]
+    fn daemon_config_rejects_empty_battery_log_path() {
+        let error = DaemonConfig::try_from(scyrox_proto::DaemonConfig {
+            low_battery_threshold: 10,
+            battery_log_path: Some(String::new()),
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "battery_log_path must not be empty");
     }
 }

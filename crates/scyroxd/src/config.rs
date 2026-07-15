@@ -15,6 +15,10 @@ pub struct DaemonConfig {
     #[serde(default = "default_low_battery_threshold")]
     pub low_battery_threshold: u8,
 
+    /// Optional JSON Lines destination for daemon battery observations.
+    #[serde(default)]
+    pub battery_log_path: Option<PathBuf>,
+
     /// Polling interval for battery status in seconds.
     #[serde(default = "default_battery_poll_interval")]
     pub battery_poll_interval_secs: u64,
@@ -44,6 +48,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             low_battery_threshold: default_low_battery_threshold(),
+            battery_log_path: None,
             battery_poll_interval_secs: default_battery_poll_interval(),
             auto_apply_on_connect: default_auto_apply(),
             default_profile_id: None,
@@ -82,7 +87,28 @@ impl DaemonConfig {
             self.low_battery_threshold <= 100,
             "low_battery_threshold must be between 0 and 100"
         );
+        if let Some(path) = &self.battery_log_path {
+            ensure!(
+                !path.as_os_str().is_empty(),
+                "battery_log_path must not be empty"
+            );
+            ensure!(
+                path.to_str().is_some(),
+                "battery_log_path must be valid UTF-8"
+            );
+        }
         Ok(())
+    }
+
+    /// Resolve a configured battery log path beneath the daemon config directory.
+    pub fn resolved_battery_log_path(&self, config_dir: &Path) -> Option<PathBuf> {
+        self.battery_log_path.as_ref().map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                config_dir.join(path)
+            }
+        })
     }
 
     /// Save configuration to a file.
@@ -124,6 +150,82 @@ mod tests {
         assert_eq!(
             config.validate().unwrap_err().to_string(),
             "low_battery_threshold must be between 0 and 100"
+        );
+    }
+
+    #[test]
+    fn missing_battery_log_path_defaults_to_none() {
+        let config: DaemonConfig = toml::from_str("battery_poll_interval_secs = 30").unwrap();
+
+        assert_eq!(config.battery_log_path, None);
+    }
+
+    #[test]
+    fn empty_battery_log_path_is_rejected() {
+        let config = DaemonConfig {
+            battery_log_path: Some(PathBuf::new()),
+            ..DaemonConfig::default()
+        };
+
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "battery_log_path must not be empty"
+        );
+    }
+
+    #[test]
+    fn battery_log_path_roundtrips_through_toml() {
+        let config = DaemonConfig {
+            battery_log_path: Some(PathBuf::from("captures/battery.jsonl")),
+            ..DaemonConfig::default()
+        };
+
+        let serialized = toml::to_string(&config).unwrap();
+        let decoded: DaemonConfig = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(decoded.battery_log_path, config.battery_log_path);
+    }
+
+    #[test]
+    fn relative_battery_log_path_resolves_beneath_config_directory() {
+        let config = DaemonConfig {
+            battery_log_path: Some(PathBuf::from("captures/battery.jsonl")),
+            ..DaemonConfig::default()
+        };
+
+        assert_eq!(
+            config.resolved_battery_log_path(Path::new("/config")),
+            Some(PathBuf::from("/config/captures/battery.jsonl"))
+        );
+    }
+
+    #[test]
+    fn absolute_battery_log_path_remains_unchanged() {
+        let config = DaemonConfig {
+            battery_log_path: Some(PathBuf::from("/captures/battery.jsonl")),
+            ..DaemonConfig::default()
+        };
+
+        assert_eq!(
+            config.resolved_battery_log_path(Path::new("/config")),
+            config.battery_log_path
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_battery_log_path_is_rejected() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let config = DaemonConfig {
+            battery_log_path: Some(PathBuf::from(OsString::from_vec(vec![0xff]))),
+            ..DaemonConfig::default()
+        };
+
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "battery_log_path must be valid UTF-8"
         );
     }
 

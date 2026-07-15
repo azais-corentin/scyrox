@@ -1,5 +1,7 @@
 //! CLI argument definitions using clap.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// Output format for command results.
@@ -266,10 +268,35 @@ pub struct DaemonConfigCommand {
 pub enum DaemonConfigAction {
     /// Show daemon configuration
     Get,
-    /// Update daemon configuration
+    /// Update a daemon setting
     Set {
-        /// Low-battery alert threshold as a percentage
-        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
-        low_battery_threshold: u8,
+        #[command(subcommand)]
+        setting: DaemonConfigSetAction,
     },
+    /// Clear an optional daemon setting
+    Unset {
+        #[command(subcommand)]
+        setting: DaemonConfigUnsetAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DaemonConfigSetAction {
+    /// Set the low-battery alert threshold
+    LowBatteryThreshold {
+        /// Low-battery alert threshold as a percentage
+        #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
+        percentage: u8,
+    },
+    /// Set the append-only battery JSON Lines destination
+    BatteryLogPath {
+        /// Config-relative or absolute log path
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DaemonConfigUnsetAction {
+    /// Disable battery logging
+    BatteryLogPath,
 }

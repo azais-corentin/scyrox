@@ -41,6 +41,7 @@ service Scyrox {
   rpc GetDaemonInfo          (Empty                        ) returns (DaemonInfo  );
   rpc GetDaemonConfig        (Empty                        ) returns (DaemonConfig);
   rpc SetLowBatteryThreshold (SetLowBatteryThresholdRequest) returns (Empty       );
+  rpc SetBatteryLogPath      (SetBatteryLogPathRequest     ) returns (Empty       );
   rpc Shutdown               (Empty                        ) returns (Empty       );
 }
 
@@ -228,12 +229,17 @@ message DaemonInfo {
 }
 
 // Effective daemon-owned configuration. The low-battery threshold defaults to
-// 10 percent when not explicitly configured.
+// 10 percent and battery logging defaults to disabled when not explicitly configured.
 message DaemonConfig {
-  uint32 low_battery_threshold = 1;
+           uint32 low_battery_threshold = 1;
+  optional string battery_log_path      = 2;
 }
 
 message SetLowBatteryThresholdRequest {
   uint32 percentage = 1;
+}
+
+message SetBatteryLogPathRequest {
+  optional string path = 1;
 }
 

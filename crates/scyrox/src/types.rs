@@ -308,10 +308,21 @@ impl Default for MouseConfig {
 pub struct BatteryStatus {
     /// Battery voltage in millivolts.
     pub voltage_mv: u16,
-    /// Battery percentage (0-100) as reported by the device.
+    /// Battery percentage (0-100) estimated from the measured voltage.
     pub percentage: u8,
     /// Whether the battery is currently charging.
     pub charging: bool,
+}
+
+/// Complete battery response decoded from the device.
+#[derive(Debug, Clone)]
+pub struct BatterySample {
+    /// Decoded battery status.
+    pub status: BatteryStatus,
+    /// Battery percentage reported directly by the device.
+    pub device_percentage: u8,
+    /// Complete response returned by the HID I/O task.
+    pub raw_response: Vec<u8>,
 }
 
 /// Firmware version information.
