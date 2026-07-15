@@ -36,14 +36,18 @@ enum Flow {
 }
 
 /// Spawn the worker on a dedicated thread with its own Tokio runtime.
-pub fn spawn(proxy: EventLoopProxy<UserEvent>) {
+///
+/// Returns the underlying [`std::io::Error`] if the thread could not be
+/// spawned; a tray with no worker is useless, so the caller is expected to
+/// exit the event loop on failure.
+pub fn spawn(proxy: EventLoopProxy<UserEvent>) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("scyrox-tray-daemon".to_string())
         .spawn(move || match tokio::runtime::Runtime::new() {
             Ok(rt) => rt.block_on(worker(proxy)),
             Err(e) => error!("failed to build worker runtime: {e}"),
-        })
-        .expect("failed to spawn daemon worker thread");
+        })?;
+    Ok(())
 }
 
 async fn worker(proxy: EventLoopProxy<UserEvent>) {

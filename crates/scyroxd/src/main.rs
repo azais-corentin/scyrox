@@ -9,6 +9,7 @@
 //! - Auto-apply profiles on device connection
 
 mod config;
+mod fs_util;
 mod hotplug;
 mod profiles;
 mod server;

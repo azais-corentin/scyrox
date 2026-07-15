@@ -21,16 +21,32 @@ use tracing_subscriber::EnvFilter;
 
 use scyrox_client::{Backend, DaemonClient, DirectBackend};
 
-use crate::cli::{Cli, Commands};
+use crate::cli::{Cli, Commands, OutputFormat};
 use crate::output::Output;
 
 fn main() -> ExitCode {
-    if let Err(e) = run() {
-        // Extract clean message from tonic Status errors
-        if let Some(status) = e.downcast_ref::<Status>() {
-            error!("{}", status.message());
+    let cli = Cli::parse();
+    let format = cli.format;
+
+    if let Err(e) = run(cli) {
+        // Extract a clean message: tonic Status carries a human string in
+        // `message()`; otherwise fall back to the error's Display.
+        let message = if let Some(status) = e.downcast_ref::<Status>() {
+            status.message().to_string()
         } else {
-            error!("{}", e);
+            e.to_string()
+        };
+
+        match format {
+            // Machine-readable errors on stderr; stdout stays reserved for
+            // success payloads. `json!` guarantees correct escaping and does
+            // not depend on the tracing subscriber being initialized.
+            OutputFormat::Json => {
+                eprintln!("{}", serde_json::json!({ "error": message }));
+            }
+            OutputFormat::Text => {
+                error!("{message}");
+            }
         }
         return ExitCode::FAILURE;
     }
@@ -38,9 +54,7 @@ fn main() -> ExitCode {
 }
 
 #[tokio::main]
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
-
+async fn run(cli: Cli) -> Result<()> {
     // Initialize logging based on verbosity level
     let verbosity = if cli.trace { 3 } else { cli.verbose };
     let filter = match verbosity {

@@ -8,6 +8,7 @@
 use ab_glyph::{Font, FontVec, OutlinedGlyph, PxScale, ScaleFont, point};
 use anyhow::{Context, Result, anyhow};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, PremultipliedColorU8, Stroke, Transform};
+use tracing::warn;
 
 use crate::state::{TrayState, is_low};
 
@@ -114,6 +115,7 @@ fn render_text(pixmap: &mut Pixmap, text: &str, color: Rgb, font: &FontVec) {
     // Measure at a trial scale, then uniformly rescale so the text block fits
     // the target box, and lay out again at the final scale.
     let Some((_, trial_w, trial_h)) = layout(font, TRIAL_SCALE, text) else {
+        warn!(text, "no renderable glyphs for tray icon text");
         return;
     };
     let factor = (MAX_TEXT_W / trial_w).min(MAX_TEXT_H / trial_h);

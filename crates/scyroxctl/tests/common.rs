@@ -17,6 +17,37 @@ pub fn scyroxctl_raw() -> Command {
     assert_cmd::cargo::cargo_bin_cmd!("scyroxctl")
 }
 
+/// Returns a Command WITHOUT -d, so the CLI uses the daemon when reachable.
+pub fn scyroxctl_daemon() -> Command {
+    assert_cmd::cargo::cargo_bin_cmd!("scyroxctl")
+}
+
+/// Panics with a clear message unless the scyroxd daemon is running and reachable.
+pub fn assert_daemon_running() {
+    let output = scyroxctl_daemon()
+        .args(["-f", "json", "status"])
+        .output()
+        .expect("Failed to execute scyroxctl");
+
+    if !output.status.success() {
+        panic!(
+            "Daemon status failed - start scyroxd first (scyroxctl daemon start).\nstderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("Failed to parse status JSON");
+
+    // The `daemon` field is only populated when the daemon backend is in use;
+    // in direct-fallback mode it is skipped. Its presence proves reachability.
+    if json.get("daemon").map(Value::is_null).unwrap_or(true) {
+        panic!(
+            "Daemon not reachable (CLI fell back to direct mode). \
+             Start scyroxd first: scyroxctl daemon start"
+        );
+    }
+}
+
 /// Panics with clear message if device not connected
 pub fn assert_device_connected() {
     let output = scyroxctl()

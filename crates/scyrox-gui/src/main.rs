@@ -8,7 +8,6 @@
 mod app;
 mod events;
 mod notifications;
-#[allow(dead_code)]
 mod tray;
 
 use anyhow::Result;

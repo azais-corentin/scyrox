@@ -2,17 +2,35 @@
 //!
 //! Provides a persistent tray icon with a context menu for quick access
 //! to common operations and an "Open" action to show the main window.
+//!
+//! Menu activations are forwarded to the iced application over an
+//! [`UnboundedSender`] rather than acting on the tray directly, so window
+//! lifecycle and shutdown stay owned by the app.
 
 use ksni::{self, menu::StandardItem};
+use tokio::sync::mpsc::UnboundedSender;
+
+/// Commands emitted by tray menu activations, consumed by the iced app.
+#[derive(Debug, Clone, Copy)]
+pub enum TrayCommand {
+    /// Show (or focus) the main window.
+    ShowWindow,
+    /// Quit the application.
+    Quit,
+}
 
 /// Tray icon state.
 pub struct ScyroxTray {
     connected: bool,
+    tx: UnboundedSender<TrayCommand>,
 }
 
 impl ScyroxTray {
-    pub fn new() -> Self {
-        Self { connected: false }
+    pub fn new(tx: UnboundedSender<TrayCommand>) -> Self {
+        Self {
+            connected: false,
+            tx,
+        }
     }
 
     pub fn set_connected(&mut self, connected: bool) {
@@ -45,8 +63,8 @@ impl ksni::Tray for ScyroxTray {
         vec![
             StandardItem {
                 label: "Open Scyrox".to_string(),
-                activate: Box::new(|_| {
-                    // TODO: send ShowWindow message to iced app
+                activate: Box::new(|this: &mut Self| {
+                    let _ = this.tx.send(TrayCommand::ShowWindow);
                 }),
                 ..Default::default()
             }
@@ -65,9 +83,8 @@ impl ksni::Tray for ScyroxTray {
             ksni::MenuItem::Separator,
             StandardItem {
                 label: "Quit".to_string(),
-                activate: Box::new(|_| {
-                    // TODO: send Quit message to iced app
-                    std::process::exit(0);
+                activate: Box::new(|this: &mut Self| {
+                    let _ = this.tx.send(TrayCommand::Quit);
                 }),
                 ..Default::default()
             }

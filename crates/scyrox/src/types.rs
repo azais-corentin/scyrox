@@ -675,8 +675,21 @@ impl KeyFunction {
     }
 
     /// Decode from wire format (4 bytes).
+    ///
+    /// Returns `None` if the type byte is unknown or the checksum byte
+    /// (byte 3 = `0x55 - type - param_high - param_low`) does not match,
+    /// so corrupted key-config reads are rejected rather than silently accepted.
     pub fn decode(bytes: &[u8; 4]) -> Option<Self> {
         let function_type = KeyFunctionType::try_from(bytes[0]).ok()?;
+
+        let expected = 0x55u8
+            .wrapping_sub(bytes[0])
+            .wrapping_sub(bytes[1])
+            .wrapping_sub(bytes[2]);
+        if bytes[3] != expected {
+            return None;
+        }
+
         let parameter = ((bytes[1] as u16) << 8) | (bytes[2] as u16);
         Some(Self {
             function_type,
@@ -1429,7 +1442,7 @@ pub enum MacroMouseButton {
 ///
 /// These codes are used for keyboard shortcuts and macros.
 /// Per USB HID Usage Tables specification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, IntoPrimitive, Display)]
 #[repr(u8)]
 pub enum HidKeyCode {
     // Letters
@@ -1461,15 +1474,25 @@ pub enum HidKeyCode {
     Z = 29,
 
     // Numbers
+    #[strum(to_string = "1")]
     Num1 = 30,
+    #[strum(to_string = "2")]
     Num2 = 31,
+    #[strum(to_string = "3")]
     Num3 = 32,
+    #[strum(to_string = "4")]
     Num4 = 33,
+    #[strum(to_string = "5")]
     Num5 = 34,
+    #[strum(to_string = "6")]
     Num6 = 35,
+    #[strum(to_string = "7")]
     Num7 = 36,
+    #[strum(to_string = "8")]
     Num8 = 37,
+    #[strum(to_string = "9")]
     Num9 = 38,
+    #[strum(to_string = "0")]
     Num0 = 39,
 
     // Control keys
@@ -1480,16 +1503,27 @@ pub enum HidKeyCode {
     Space = 44,
 
     // Symbols
+    #[strum(to_string = "-")]
     Minus = 45,
+    #[strum(to_string = "=")]
     Equal = 46,
+    #[strum(to_string = "[")]
     LeftBracket = 47,
+    #[strum(to_string = "]")]
     RightBracket = 48,
+    #[strum(to_string = "\\")]
     Backslash = 49,
+    #[strum(to_string = ";")]
     Semicolon = 51,
+    #[strum(to_string = "'")]
     Quote = 52,
+    #[strum(to_string = "`")]
     Backquote = 53,
+    #[strum(to_string = ",")]
     Comma = 54,
+    #[strum(to_string = ".")]
     Period = 55,
+    #[strum(to_string = "/")]
     Slash = 56,
 
     // Modifiers and function keys
@@ -1519,28 +1553,48 @@ pub enum HidKeyCode {
     PageDown = 78,
 
     // Arrow keys
+    #[strum(to_string = "Right")]
     ArrowRight = 79,
+    #[strum(to_string = "Left")]
     ArrowLeft = 80,
+    #[strum(to_string = "Down")]
     ArrowDown = 81,
+    #[strum(to_string = "Up")]
     ArrowUp = 82,
 
     // Numpad
     NumLock = 83,
+    #[strum(to_string = "Num/")]
     NumpadDivide = 84,
+    #[strum(to_string = "Num*")]
     NumpadMultiply = 85,
+    #[strum(to_string = "Num-")]
     NumpadSubtract = 86,
+    #[strum(to_string = "Num+")]
     NumpadAdd = 87,
+    #[strum(to_string = "NumEnter")]
     NumpadEnter = 88,
+    #[strum(to_string = "Num1")]
     Numpad1 = 89,
+    #[strum(to_string = "Num2")]
     Numpad2 = 90,
+    #[strum(to_string = "Num3")]
     Numpad3 = 91,
+    #[strum(to_string = "Num4")]
     Numpad4 = 92,
+    #[strum(to_string = "Num5")]
     Numpad5 = 93,
+    #[strum(to_string = "Num6")]
     Numpad6 = 94,
+    #[strum(to_string = "Num7")]
     Numpad7 = 95,
+    #[strum(to_string = "Num8")]
     Numpad8 = 96,
+    #[strum(to_string = "Num9")]
     Numpad9 = 97,
+    #[strum(to_string = "Num0")]
     Numpad0 = 98,
+    #[strum(to_string = "Num.")]
     NumpadDecimal = 99,
 }
 
@@ -1552,206 +1606,7 @@ impl HidKeyCode {
 
     /// Parse from scan code value.
     pub fn from_code(code: u8) -> Option<Self> {
-        match code {
-            4 => Some(HidKeyCode::A),
-            5 => Some(HidKeyCode::B),
-            6 => Some(HidKeyCode::C),
-            7 => Some(HidKeyCode::D),
-            8 => Some(HidKeyCode::E),
-            9 => Some(HidKeyCode::F),
-            10 => Some(HidKeyCode::G),
-            11 => Some(HidKeyCode::H),
-            12 => Some(HidKeyCode::I),
-            13 => Some(HidKeyCode::J),
-            14 => Some(HidKeyCode::K),
-            15 => Some(HidKeyCode::L),
-            16 => Some(HidKeyCode::M),
-            17 => Some(HidKeyCode::N),
-            18 => Some(HidKeyCode::O),
-            19 => Some(HidKeyCode::P),
-            20 => Some(HidKeyCode::Q),
-            21 => Some(HidKeyCode::R),
-            22 => Some(HidKeyCode::S),
-            23 => Some(HidKeyCode::T),
-            24 => Some(HidKeyCode::U),
-            25 => Some(HidKeyCode::V),
-            26 => Some(HidKeyCode::W),
-            27 => Some(HidKeyCode::X),
-            28 => Some(HidKeyCode::Y),
-            29 => Some(HidKeyCode::Z),
-            30 => Some(HidKeyCode::Num1),
-            31 => Some(HidKeyCode::Num2),
-            32 => Some(HidKeyCode::Num3),
-            33 => Some(HidKeyCode::Num4),
-            34 => Some(HidKeyCode::Num5),
-            35 => Some(HidKeyCode::Num6),
-            36 => Some(HidKeyCode::Num7),
-            37 => Some(HidKeyCode::Num8),
-            38 => Some(HidKeyCode::Num9),
-            39 => Some(HidKeyCode::Num0),
-            40 => Some(HidKeyCode::Enter),
-            41 => Some(HidKeyCode::Escape),
-            42 => Some(HidKeyCode::Backspace),
-            43 => Some(HidKeyCode::Tab),
-            44 => Some(HidKeyCode::Space),
-            45 => Some(HidKeyCode::Minus),
-            46 => Some(HidKeyCode::Equal),
-            47 => Some(HidKeyCode::LeftBracket),
-            48 => Some(HidKeyCode::RightBracket),
-            49 => Some(HidKeyCode::Backslash),
-            51 => Some(HidKeyCode::Semicolon),
-            52 => Some(HidKeyCode::Quote),
-            53 => Some(HidKeyCode::Backquote),
-            54 => Some(HidKeyCode::Comma),
-            55 => Some(HidKeyCode::Period),
-            56 => Some(HidKeyCode::Slash),
-            57 => Some(HidKeyCode::CapsLock),
-            58 => Some(HidKeyCode::F1),
-            59 => Some(HidKeyCode::F2),
-            60 => Some(HidKeyCode::F3),
-            61 => Some(HidKeyCode::F4),
-            62 => Some(HidKeyCode::F5),
-            63 => Some(HidKeyCode::F6),
-            64 => Some(HidKeyCode::F7),
-            65 => Some(HidKeyCode::F8),
-            66 => Some(HidKeyCode::F9),
-            67 => Some(HidKeyCode::F10),
-            68 => Some(HidKeyCode::F11),
-            69 => Some(HidKeyCode::F12),
-            70 => Some(HidKeyCode::PrintScreen),
-            71 => Some(HidKeyCode::ScrollLock),
-            72 => Some(HidKeyCode::Pause),
-            73 => Some(HidKeyCode::Insert),
-            74 => Some(HidKeyCode::Home),
-            75 => Some(HidKeyCode::PageUp),
-            76 => Some(HidKeyCode::Delete),
-            77 => Some(HidKeyCode::End),
-            78 => Some(HidKeyCode::PageDown),
-            79 => Some(HidKeyCode::ArrowRight),
-            80 => Some(HidKeyCode::ArrowLeft),
-            81 => Some(HidKeyCode::ArrowDown),
-            82 => Some(HidKeyCode::ArrowUp),
-            83 => Some(HidKeyCode::NumLock),
-            84 => Some(HidKeyCode::NumpadDivide),
-            85 => Some(HidKeyCode::NumpadMultiply),
-            86 => Some(HidKeyCode::NumpadSubtract),
-            87 => Some(HidKeyCode::NumpadAdd),
-            88 => Some(HidKeyCode::NumpadEnter),
-            89 => Some(HidKeyCode::Numpad1),
-            90 => Some(HidKeyCode::Numpad2),
-            91 => Some(HidKeyCode::Numpad3),
-            92 => Some(HidKeyCode::Numpad4),
-            93 => Some(HidKeyCode::Numpad5),
-            94 => Some(HidKeyCode::Numpad6),
-            95 => Some(HidKeyCode::Numpad7),
-            96 => Some(HidKeyCode::Numpad8),
-            97 => Some(HidKeyCode::Numpad9),
-            98 => Some(HidKeyCode::Numpad0),
-            99 => Some(HidKeyCode::NumpadDecimal),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for HidKeyCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HidKeyCode::A => write!(f, "A"),
-            HidKeyCode::B => write!(f, "B"),
-            HidKeyCode::C => write!(f, "C"),
-            HidKeyCode::D => write!(f, "D"),
-            HidKeyCode::E => write!(f, "E"),
-            HidKeyCode::F => write!(f, "F"),
-            HidKeyCode::G => write!(f, "G"),
-            HidKeyCode::H => write!(f, "H"),
-            HidKeyCode::I => write!(f, "I"),
-            HidKeyCode::J => write!(f, "J"),
-            HidKeyCode::K => write!(f, "K"),
-            HidKeyCode::L => write!(f, "L"),
-            HidKeyCode::M => write!(f, "M"),
-            HidKeyCode::N => write!(f, "N"),
-            HidKeyCode::O => write!(f, "O"),
-            HidKeyCode::P => write!(f, "P"),
-            HidKeyCode::Q => write!(f, "Q"),
-            HidKeyCode::R => write!(f, "R"),
-            HidKeyCode::S => write!(f, "S"),
-            HidKeyCode::T => write!(f, "T"),
-            HidKeyCode::U => write!(f, "U"),
-            HidKeyCode::V => write!(f, "V"),
-            HidKeyCode::W => write!(f, "W"),
-            HidKeyCode::X => write!(f, "X"),
-            HidKeyCode::Y => write!(f, "Y"),
-            HidKeyCode::Z => write!(f, "Z"),
-            HidKeyCode::Num1 => write!(f, "1"),
-            HidKeyCode::Num2 => write!(f, "2"),
-            HidKeyCode::Num3 => write!(f, "3"),
-            HidKeyCode::Num4 => write!(f, "4"),
-            HidKeyCode::Num5 => write!(f, "5"),
-            HidKeyCode::Num6 => write!(f, "6"),
-            HidKeyCode::Num7 => write!(f, "7"),
-            HidKeyCode::Num8 => write!(f, "8"),
-            HidKeyCode::Num9 => write!(f, "9"),
-            HidKeyCode::Num0 => write!(f, "0"),
-            HidKeyCode::Enter => write!(f, "Enter"),
-            HidKeyCode::Escape => write!(f, "Escape"),
-            HidKeyCode::Backspace => write!(f, "Backspace"),
-            HidKeyCode::Tab => write!(f, "Tab"),
-            HidKeyCode::Space => write!(f, "Space"),
-            HidKeyCode::Minus => write!(f, "-"),
-            HidKeyCode::Equal => write!(f, "="),
-            HidKeyCode::LeftBracket => write!(f, "["),
-            HidKeyCode::RightBracket => write!(f, "]"),
-            HidKeyCode::Backslash => write!(f, "\\"),
-            HidKeyCode::Semicolon => write!(f, ";"),
-            HidKeyCode::Quote => write!(f, "'"),
-            HidKeyCode::Backquote => write!(f, "`"),
-            HidKeyCode::Comma => write!(f, ","),
-            HidKeyCode::Period => write!(f, "."),
-            HidKeyCode::Slash => write!(f, "/"),
-            HidKeyCode::CapsLock => write!(f, "CapsLock"),
-            HidKeyCode::F1 => write!(f, "F1"),
-            HidKeyCode::F2 => write!(f, "F2"),
-            HidKeyCode::F3 => write!(f, "F3"),
-            HidKeyCode::F4 => write!(f, "F4"),
-            HidKeyCode::F5 => write!(f, "F5"),
-            HidKeyCode::F6 => write!(f, "F6"),
-            HidKeyCode::F7 => write!(f, "F7"),
-            HidKeyCode::F8 => write!(f, "F8"),
-            HidKeyCode::F9 => write!(f, "F9"),
-            HidKeyCode::F10 => write!(f, "F10"),
-            HidKeyCode::F11 => write!(f, "F11"),
-            HidKeyCode::F12 => write!(f, "F12"),
-            HidKeyCode::PrintScreen => write!(f, "PrintScreen"),
-            HidKeyCode::ScrollLock => write!(f, "ScrollLock"),
-            HidKeyCode::Pause => write!(f, "Pause"),
-            HidKeyCode::Insert => write!(f, "Insert"),
-            HidKeyCode::Home => write!(f, "Home"),
-            HidKeyCode::PageUp => write!(f, "PageUp"),
-            HidKeyCode::Delete => write!(f, "Delete"),
-            HidKeyCode::End => write!(f, "End"),
-            HidKeyCode::PageDown => write!(f, "PageDown"),
-            HidKeyCode::ArrowRight => write!(f, "Right"),
-            HidKeyCode::ArrowLeft => write!(f, "Left"),
-            HidKeyCode::ArrowDown => write!(f, "Down"),
-            HidKeyCode::ArrowUp => write!(f, "Up"),
-            HidKeyCode::NumLock => write!(f, "NumLock"),
-            HidKeyCode::NumpadDivide => write!(f, "Num/"),
-            HidKeyCode::NumpadMultiply => write!(f, "Num*"),
-            HidKeyCode::NumpadSubtract => write!(f, "Num-"),
-            HidKeyCode::NumpadAdd => write!(f, "Num+"),
-            HidKeyCode::NumpadEnter => write!(f, "NumEnter"),
-            HidKeyCode::Numpad1 => write!(f, "Num1"),
-            HidKeyCode::Numpad2 => write!(f, "Num2"),
-            HidKeyCode::Numpad3 => write!(f, "Num3"),
-            HidKeyCode::Numpad4 => write!(f, "Num4"),
-            HidKeyCode::Numpad5 => write!(f, "Num5"),
-            HidKeyCode::Numpad6 => write!(f, "Num6"),
-            HidKeyCode::Numpad7 => write!(f, "Num7"),
-            HidKeyCode::Numpad8 => write!(f, "Num8"),
-            HidKeyCode::Numpad9 => write!(f, "Num9"),
-            HidKeyCode::Numpad0 => write!(f, "Num0"),
-            HidKeyCode::NumpadDecimal => write!(f, "Num."),
-        }
+        Self::try_from(code).ok()
     }
 }
 
@@ -1779,6 +1634,37 @@ pub enum Notification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hid_key_code_roundtrip_and_display() {
+        // Every mapped scan code round-trips through code()/from_code().
+        for code in 4..=99u8 {
+            if let Some(k) = HidKeyCode::from_code(code) {
+                assert_eq!(k.code(), code, "roundtrip failed for code {code}");
+            }
+        }
+        // Code 50 is intentionally unmapped (gap between Backslash=49 and Semicolon=51).
+        assert!(HidKeyCode::from_code(50).is_none());
+        // Display spot-checks preserving the historical wire strings.
+        assert_eq!(HidKeyCode::Num1.to_string(), "1");
+        assert_eq!(HidKeyCode::NumpadDecimal.to_string(), "Num.");
+    }
+
+    #[test]
+    fn test_key_function_encode_decode_roundtrip() {
+        let original = KeyFunction::dpi_switch(DpiSwitchMode::Cycle);
+        let encoded = original.encode();
+        let decoded = KeyFunction::decode(&encoded).expect("valid checksum decodes");
+        assert_eq!(decoded.function_type, original.function_type);
+        assert_eq!(decoded.parameter, original.parameter);
+    }
+
+    #[test]
+    fn test_key_function_decode_rejects_bad_checksum() {
+        let mut encoded = KeyFunction::dpi_switch(DpiSwitchMode::Cycle).encode();
+        encoded[3] = encoded[3].wrapping_add(1); // corrupt checksum byte
+        assert!(KeyFunction::decode(&encoded).is_none());
+    }
 
     #[test]
     fn test_macro_event_encode_decode() {

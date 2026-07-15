@@ -246,6 +246,21 @@ impl Mouse {
         Ok(())
     }
 
+    /// Ensure a response slice is long enough to index `need` bytes.
+    ///
+    /// Device responses are forwarded verbatim from the HID layer, so a
+    /// truncated packet must be rejected before any fixed-offset indexing to
+    /// avoid panicking the async task.
+    fn ensure_response_len(response: &[u8], need: usize) -> Result<()> {
+        if response.len() < need {
+            return Err(MouseError::InsufficientData {
+                need,
+                got: response.len(),
+            });
+        }
+        Ok(())
+    }
+
     /// Check response status byte per protocol spec.
     ///
     /// Per protocol spec section 3 and 9, response byte index 2 (with Report ID at byte 0)
@@ -254,12 +269,7 @@ impl Mouse {
     /// Returns Ok(()) if status is success, Err(NotSupported) if status indicates error.
     #[instrument(skip(response))]
     fn check_response_status(response: &[u8]) -> Result<()> {
-        if response.len() < 3 {
-            return Err(MouseError::InsufficientData {
-                need: 3,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(response, 3)?;
 
         // Status byte is at index 2 (Report ID at 0, Command at 1, Status at 2)
         if response[2] != 0x00 {
@@ -385,17 +395,7 @@ impl Mouse {
         let response = self.send_command(&cmd).await?;
 
         // Validate response echoes the command (command is at byte 1 after report ID)
-        if response.len() < 2 {
-            error!(
-                need = 2,
-                got = response.len(),
-                "insufficient data in write response"
-            );
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_MEMORY_WRITE {
             error!(
@@ -503,17 +503,7 @@ impl Mouse {
         let cmd = build_get_long_range_cmd();
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 7 {
-            error!(
-                need = 7,
-                got = response.len(),
-                "insufficient data in wireless status response"
-            );
-            return Err(MouseError::InsufficientData {
-                need: 7,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 7)?;
 
         // Per protocol spec section 5.15: if byte 2 == 0x01, the device
         // does not support long-range mode
@@ -567,17 +557,7 @@ impl Mouse {
         let cmd = build_battery_cmd();
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 10 {
-            error!(
-                need = 10,
-                got = response.len(),
-                "insufficient data in battery response"
-            );
-            return Err(MouseError::InsufficientData {
-                need: 10,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 10)?;
 
         if response[1] != CMD_BATTERY {
             error!(
@@ -837,7 +817,14 @@ impl Mouse {
         let data = self.read_memory(address, 4).await?;
         let bytes = [data[0], data[1], data[2], data[3]];
 
-        let function = KeyFunction::decode(&bytes).unwrap_or_default();
+        let function = KeyFunction::decode(&bytes).unwrap_or_else(|| {
+            warn!(
+                key_index,
+                ?bytes,
+                "invalid key function data (bad checksum or unknown type), using default"
+            );
+            KeyFunction::default()
+        });
         debug!(key_index, ?function, "key function retrieved");
         Ok(function)
     }
@@ -968,17 +955,7 @@ impl Mouse {
         let cmd = build_get_current_config_cmd();
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 7 {
-            error!(
-                need = 7,
-                got = response.len(),
-                "insufficient data in get profile response"
-            );
-            return Err(MouseError::InsufficientData {
-                need: 7,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 7)?;
 
         if response[1] != CMD_GET_CURRENT_CONFIG {
             error!(
@@ -1004,17 +981,7 @@ impl Mouse {
         let cmd = build_status_cmd();
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 7 {
-            error!(
-                need = 7,
-                got = response.len(),
-                "insufficient data in online check response"
-            );
-            return Err(MouseError::InsufficientData {
-                need: 7,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 7)?;
 
         let online = response[6] == 0x01;
         debug!(online, "online status retrieved");
@@ -1028,17 +995,7 @@ impl Mouse {
         let cmd = build_status_cmd();
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 10 {
-            error!(
-                need = 10,
-                got = response.len(),
-                "insufficient data in device address response"
-            );
-            return Err(MouseError::InsufficientData {
-                need: 10,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 10)?;
 
         // Per protocol section 5.3 (with Report ID at byte 0):
         // Byte 6: Online status
@@ -1132,17 +1089,7 @@ impl Mouse {
         let cmd = build_set_long_range_cmd(enabled);
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            error!(
-                need = 2,
-                got = response.len(),
-                "insufficient data in long distance mode response"
-            );
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_LONG_DISTANCE {
             error!(
@@ -1228,12 +1175,7 @@ impl Mouse {
         let cmd = build_flash_write(address, &encoded);
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_WRITE_FLASH {
             return Err(MouseError::UnexpectedResponse {
@@ -1261,12 +1203,7 @@ impl Mouse {
         let cmd = build_flash_write(address, &data);
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_WRITE_FLASH {
             return Err(MouseError::UnexpectedResponse {
@@ -1319,12 +1256,7 @@ impl Mouse {
         let cmd = build_flash_write(OFFSET_LIGHT_SETTINGS, &data);
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_WRITE_FLASH {
             return Err(MouseError::UnexpectedResponse {
@@ -1382,12 +1314,7 @@ impl Mouse {
         let cmd = build_flash_write(address, &encoded);
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_WRITE_FLASH {
             return Err(MouseError::UnexpectedResponse {
@@ -1490,12 +1417,7 @@ impl Mouse {
         let cmd = build_set_current_config_cmd(profile_index);
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_SET_CURRENT_CONFIG {
             return Err(MouseError::UnexpectedResponse {
@@ -1519,12 +1441,7 @@ impl Mouse {
         let cmd = build_clear_setting_cmd();
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_CLEAR_SETTING {
             return Err(MouseError::UnexpectedResponse {
@@ -1547,12 +1464,7 @@ impl Mouse {
         let cmd = build_dongle_enter_pair_cmd();
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_DONGLE_ENTER_PAIR {
             return Err(MouseError::UnexpectedResponse {
@@ -1572,12 +1484,7 @@ impl Mouse {
         let cmd = build_get_pair_state_cmd();
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 8 {
-            return Err(MouseError::InsufficientData {
-                need: 8,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 8)?;
 
         if response[1] != CMD_GET_PAIR_STATE {
             return Err(MouseError::UnexpectedResponse {
@@ -1603,12 +1510,7 @@ impl Mouse {
         let cmd = build_pc_driver_status_cmd(connected);
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 2 {
-            return Err(MouseError::InsufficientData {
-                need: 2,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 2)?;
 
         if response[1] != CMD_PC_DRIVER_STATUS {
             return Err(MouseError::UnexpectedResponse {
@@ -1656,12 +1558,7 @@ impl Mouse {
         let cmd = build_handshake_cmd(&random_bytes);
         let response = self.send_command(&cmd).await?;
 
-        if response.len() < 12 {
-            return Err(MouseError::InsufficientData {
-                need: 12,
-                got: response.len(),
-            });
-        }
+        Self::ensure_response_len(&response, 13)?;
 
         if response[1] != CMD_ENCRYPTION_DATA {
             return Err(MouseError::UnexpectedResponse {
@@ -1698,5 +1595,27 @@ impl Mouse {
 
         debug!(?info, "handshake completed");
         Ok(info)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_response_len_rejects_short_slice() {
+        let err = Mouse::ensure_response_len(&[0u8; 3], 10).unwrap_err();
+        match err {
+            MouseError::InsufficientData { need, got } => {
+                assert_eq!(need, 10);
+                assert_eq!(got, 3);
+            }
+            other => panic!("expected InsufficientData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_response_len_accepts_exact_length() {
+        assert!(Mouse::ensure_response_len(&[0u8; 10], 10).is_ok());
     }
 }

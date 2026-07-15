@@ -147,19 +147,20 @@ impl ProfileStore {
 
     /// Set a profile as the default.
     pub async fn set_default(&self, id: &str) -> Result<()> {
-        // First, unset any existing default
-        let profiles = self.list().await?;
-        for mut profile in profiles {
+        // Validate the target exists before mutating any on-disk state.
+        let mut target = self.get(id).await?;
+
+        // Unset any existing defaults (reusing the single directory scan).
+        for mut profile in self.list().await? {
             if profile.is_default && profile.id != id {
                 profile.is_default = false;
                 self.save_profile(&profile).await?;
             }
         }
 
-        // Set the new default
-        let mut profile = self.get(id).await?;
-        profile.is_default = true;
-        self.save_profile(&profile).await?;
+        // Set the new default last.
+        target.is_default = true;
+        self.save_profile(&target).await?;
 
         info!(id, "Set default profile");
         Ok(())
@@ -196,7 +197,7 @@ impl ProfileStore {
     async fn save_profile(&self, profile: &Profile) -> Result<()> {
         let path = self.profile_path(&profile.id);
         let contents = toml::to_string_pretty(profile)?;
-        fs::write(&path, contents).await?;
+        crate::fs_util::write_atomic(&path, &contents).await?;
         Ok(())
     }
 }
@@ -225,5 +226,75 @@ impl From<scyrox::MouseConfig> for ProfileConfig {
             high_speed_mode: config.high_speed_mode,
             long_distance_mode: config.long_distance_mode,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> ProfileConfig {
+        ProfileConfig {
+            polling_rate_hz: 1000,
+            lift_off_distance_mm: 1.0,
+            sleep_timeout_seconds: 300,
+            angle_snapping: false,
+            ripple_control: false,
+            high_speed_mode: false,
+            long_distance_mode: false,
+        }
+    }
+
+    fn temp_store(tag: &str) -> (ProfileStore, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "scyroxd-profiles-test-{}-{tag}",
+            std::process::id()
+        ));
+        let store = ProfileStore {
+            profiles_dir: dir.clone(),
+        };
+        (store, dir)
+    }
+
+    #[tokio::test]
+    async fn save_reload_roundtrip() {
+        let (store, dir) = temp_store("roundtrip");
+        store.init().await.unwrap();
+
+        let created = store
+            .create("My Profile".to_string(), test_config())
+            .await
+            .unwrap();
+
+        let loaded = store.get(&created.id).await.unwrap();
+        assert_eq!(loaded.id, created.id);
+        assert_eq!(loaded.name, "My Profile");
+        assert_eq!(loaded.config.polling_rate_hz, 1000);
+        assert!(!loaded.is_default);
+
+        fs::remove_dir_all(&dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_default_missing_leaves_existing_default_intact() {
+        let (store, dir) = temp_store("missing-default");
+        store.init().await.unwrap();
+
+        let existing = store
+            .create("Existing".to_string(), test_config())
+            .await
+            .unwrap();
+        store.set_default(&existing.id).await.unwrap();
+
+        let err = store.set_default("does-not-exist").await;
+        assert!(err.is_err());
+
+        let reloaded = store.get(&existing.id).await.unwrap();
+        assert!(
+            reloaded.is_default,
+            "existing default must survive a failed set_default"
+        );
+
+        fs::remove_dir_all(&dir).await.unwrap();
     }
 }

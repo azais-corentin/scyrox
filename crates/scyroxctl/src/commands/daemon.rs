@@ -1,10 +1,8 @@
 //! Daemon management commands.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use serde::Serialize;
 
 use crate::cli::{
@@ -12,9 +10,6 @@ use crate::cli::{
 };
 use crate::output::Output;
 use scyrox_client::DaemonClient;
-
-/// Default socket name.
-const SOCKET_NAME: &str = "scyroxd.sock";
 
 pub async fn run(cmd: &DaemonCommand, output: &Output) -> Result<()> {
     match &cmd.action {
@@ -89,7 +84,8 @@ async fn stop_daemon(output: &Output) -> Result<()> {
         Ok(client) => {
             output.print_success("Stopping daemon...");
             let _ = client.shutdown().await;
-            let socket_path = get_socket_path()?;
+            let socket_path =
+                scyrox::paths::get_socket_path().context("Failed to determine socket path")?;
             for _ in 0..10 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 if !socket_path.exists() {
@@ -179,16 +175,4 @@ async fn restart_daemon(output: &Output) -> Result<()> {
     stop_daemon(output).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     start_daemon(false, output).await
-}
-
-/// Get the socket path.
-fn get_socket_path() -> Result<PathBuf> {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return Ok(PathBuf::from(runtime_dir).join("scyrox").join(SOCKET_NAME));
-    }
-
-    let dirs =
-        ProjectDirs::from("", "", "scyrox").context("Failed to determine project directories")?;
-    let state_dir = dirs.state_dir().unwrap_or_else(|| dirs.data_local_dir());
-    Ok(state_dir.join(SOCKET_NAME))
 }

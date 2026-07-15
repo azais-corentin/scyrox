@@ -88,14 +88,7 @@ impl DaemonConfig {
     /// Save configuration to a file.
     pub async fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let contents = toml::to_string_pretty(self)?;
-        let tmp = path.with_extension("toml.tmp");
-        fs::write(&tmp, contents).await?;
-        fs::rename(&tmp, path).await?;
+        crate::fs_util::write_atomic(path, &toml::to_string_pretty(self)?).await?;
         debug!(?path, "Saved configuration");
         Ok(())
     }

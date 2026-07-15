@@ -98,7 +98,10 @@ fn main() -> Result<()> {
 
                 // Start the worker only now, so proxy events cannot arrive
                 // before the loop is running.
-                daemon::spawn(worker_proxy.clone());
+                if let Err(e) = daemon::spawn(worker_proxy.clone()) {
+                    error!("failed to spawn daemon worker thread: {e}");
+                    *control_flow = ControlFlow::Exit;
+                }
             }
 
             Event::UserEvent(UserEvent::State(new_state)) => {

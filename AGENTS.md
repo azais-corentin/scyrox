@@ -28,7 +28,7 @@ scyroxctl (CLI)          scyroxd (daemon)
 
 **Daemon model**: `HotplugMonitor` polls `hidapi::refresh_devices()` every 1s, emitting `DeviceEvent`s. The daemon holds the `Mouse` behind `Arc<Mutex<Option<Mouse>>>` (None when disconnected). A `with_mouse!` macro in `server.rs` ensures the device is connected before executing RPC bodies.
 
-**CLI model**: Tries daemon gRPC first, falls back to direct HID access (`-d` flag forces direct). Backend trait abstracts both modes.
+**CLI model**: Tries daemon gRPC first, falls back to direct HID access (`-d` flag forces direct). The `Backend` trait (in the `scyrox-client` crate) abstracts both modes and is shared by scyroxctl, scyrox-tray, and scyrox-gui.
 
 ## Key Directories
 
@@ -57,16 +57,19 @@ crates/
       hotplug.rs    Polling-based device connect/disconnect detection
       profiles.rs   TOML profile persistence (XDG config dir)
       config.rs     Daemon configuration (TOML)
+      fs_util.rs    Atomic file write helper (shared by profiles + config)
   scyroxctl/        CLI tool
     src/
-      main.rs       Entry point, tracing setup, backend selection
+      main.rs       Entry point, tracing setup, run()/error formatting
       cli.rs        Clap derive structs (Commands, GetWhat, SetWhat, etc.)
-      backend.rs    Backend async_trait (unified daemon/direct interface)
-      client.rs     DaemonClient (gRPC over Unix socket)
-      direct.rs     DirectBackend (direct HID access)
       output.rs     Text/JSON output formatting
-      commands/     Per-subcommand handler modules
+      commands/     Per-subcommand handler modules (daemon.rs, get.rs, set.rs, profile.rs, status.rs)
     tests/          Integration tests (hardware-gated)
+  scyrox-client/    Unified Backend abstraction (consumed by scyroxctl, scyrox-tray, scyrox-gui)
+    src/
+      lib.rs        Backend trait (unified daemon/direct interface)
+      daemon.rs     DaemonClient (gRPC over Unix socket)
+      direct.rs     DirectBackend (direct HID access)
   scyrox-tray/      Cross-platform system tray battery indicator
     src/
       main.rs       tao event loop, tray creation, UserEvent dispatch
@@ -74,6 +77,13 @@ crates/
       icon.rs       Font discovery + RGBA icon rendering
       daemon.rs     Daemon spawn/connect and WatchEvents worker
       notifications.rs  Low-battery desktop notification
+  scyrox-gui/       iced 0.14 GUI (daemon-mode window + ksni tray)
+    src/
+      main.rs       Entry point
+      app.rs        iced daemon app: state, update, view, event stream
+      events.rs     Proto event mapping
+      notifications.rs  Low-battery desktop notification
+      tray.rs       ksni tray (Open/Quit -> app via command channel)
 docs/               Protocol spec, battery estimation, firmware notes
 ```
 

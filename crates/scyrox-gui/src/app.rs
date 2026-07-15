@@ -2,13 +2,16 @@
 
 use std::time::Duration;
 
-use iced::futures::SinkExt;
+use iced::futures::{SinkExt, Stream};
 use iced::widget::{center, column, text};
-use iced::{Element, Subscription, Task as IcedTask, Theme};
+use iced::{Element, Subscription, Task as IcedTask, Theme, window};
+use ksni::TrayMethods;
 use scyrox::Notification;
 use scyrox_client::{Backend, DaemonClient, DirectBackend};
 use scyrox_proto::event;
 use tracing::{info, warn};
+
+use crate::tray::{ScyroxTray, TrayCommand};
 
 /// Whether the GUI is using the daemon or direct HID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,8 +33,18 @@ enum ConnectionStatus {
     Unavailable,
 }
 
+/// A handle to the running ksni tray, stored in app state so connection
+/// changes can be pushed to the tray menu.
+#[derive(Clone)]
+pub struct TrayHandle(pub ksni::Handle<ScyroxTray>);
+
+impl std::fmt::Debug for TrayHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TrayHandle(..)")
+    }
+}
+
 /// Top-level application message type.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Message {
     /// Initial state fetched on startup.
@@ -44,10 +57,18 @@ pub enum Message {
     ConnectionFailed,
     /// A stream event was received.
     EventReceived(events::AppEvent),
-    /// Tray requested the window to be shown.
+    /// Tray requested the window to be shown (or focused).
     ShowWindow,
     /// Tray requested application quit.
     Quit,
+    /// A window finished opening.
+    WindowOpened(window::Id),
+    /// A window was closed by the user.
+    WindowClosed(window::Id),
+    /// The tray spawned successfully; carries its handle.
+    TrayReady(TrayHandle),
+    /// The tray could not be spawned (no StatusNotifier host).
+    TrayUnavailable,
 }
 
 /// Events that map from daemon proto events to application-level events.
@@ -74,16 +95,31 @@ pub mod events {
     }
 }
 
+/// Logical settings for the main window.
+fn window_settings() -> window::Settings {
+    window::Settings {
+        size: iced::Size::new(480.0, 360.0),
+        ..Default::default()
+    }
+}
+
 /// Main application state.
 pub struct App {
     status: ConnectionStatus,
     battery_percentage: Option<u8>,
     backend_mode: Option<BackendMode>,
+    /// The currently open window, if any.
+    window: Option<window::Id>,
+    /// Handle to the running tray, if it spawned.
+    tray: Option<TrayHandle>,
+    /// Whether a tray is (or may still become) available. When false and the
+    /// window closes, the app has no remaining UI and must exit.
+    tray_available: bool,
 }
 
 impl App {
-    fn new() -> (Self, IcedTask<Message>) {
-        let task = IcedTask::perform(fetch_initial_state(), |result| match result {
+    fn boot() -> (Self, IcedTask<Message>) {
+        let fetch = IcedTask::perform(fetch_initial_state(), |result| match result {
             Ok((mode, connected, battery)) => Message::InitialState {
                 mode,
                 connected,
@@ -92,14 +128,33 @@ impl App {
             Err(_) => Message::ConnectionFailed,
         });
 
+        let (_id, open) = window::open(window_settings());
+        let open = open.map(Message::WindowOpened);
+
         (
             Self {
                 status: ConnectionStatus::Connecting,
                 battery_percentage: None,
                 backend_mode: None,
+                window: None,
+                tray: None,
+                tray_available: true,
             },
-            task,
+            IcedTask::batch([fetch, open]),
         )
+    }
+
+    /// Push the current connection state to the tray menu, if the tray exists.
+    fn push_tray_connected(&self, connected: bool) -> IcedTask<Message> {
+        if let Some(TrayHandle(handle)) = &self.tray {
+            let handle = handle.clone();
+            IcedTask::future(async move {
+                handle.update(|t| t.set_connected(connected)).await;
+            })
+            .discard()
+        } else {
+            IcedTask::none()
+        }
     }
 
     fn update(&mut self, message: Message) -> IcedTask<Message> {
@@ -117,55 +172,88 @@ impl App {
                 };
                 self.battery_percentage = battery;
                 info!(?self.status, ?self.battery_percentage, ?mode, "initial state loaded");
-                IcedTask::none()
+                self.push_tray_connected(connected)
             }
             Message::ConnectionFailed => {
                 warn!("failed to connect to daemon and device for initial state");
                 self.status = ConnectionStatus::Unavailable;
-                IcedTask::none()
+                self.push_tray_connected(false)
             }
-            Message::EventReceived(event) => {
-                match event {
-                    events::AppEvent::ConnectionChanged { connected } => {
-                        self.status = if connected {
-                            ConnectionStatus::Connected
-                        } else {
-                            self.battery_percentage = None;
-                            ConnectionStatus::Disconnected
-                        };
-                    }
-                    events::AppEvent::BatteryUpdated { percentage } => {
-                        self.battery_percentage = Some(percentage);
-                    }
-                    events::AppEvent::LowBattery { .. } => {
-                        // Notification handled by events module
-                    }
-                    events::AppEvent::ProfileApplied { .. } => {
-                        // Could refresh config display
-                    }
-                    events::AppEvent::SettingsChanged => {
-                        // Could refresh config display
-                    }
-                    events::AppEvent::ModeChanged { mode } => {
-                        self.backend_mode = Some(mode);
-                        info!(?mode, "backend mode changed");
-                    }
-                    events::AppEvent::NothingAvailable => {
-                        self.status = ConnectionStatus::Unavailable;
+            Message::EventReceived(event) => match event {
+                events::AppEvent::ConnectionChanged { connected } => {
+                    self.status = if connected {
+                        ConnectionStatus::Connected
+                    } else {
                         self.battery_percentage = None;
-                    }
+                        ConnectionStatus::Disconnected
+                    };
+                    self.push_tray_connected(connected)
                 }
+                events::AppEvent::BatteryUpdated { percentage } => {
+                    self.battery_percentage = Some(percentage);
+                    IcedTask::none()
+                }
+                events::AppEvent::LowBattery { .. } => {
+                    // Notification handled by events module
+                    IcedTask::none()
+                }
+                events::AppEvent::ProfileApplied { .. } => {
+                    // Could refresh config display
+                    IcedTask::none()
+                }
+                events::AppEvent::SettingsChanged => {
+                    // Could refresh config display
+                    IcedTask::none()
+                }
+                events::AppEvent::ModeChanged { mode } => {
+                    self.backend_mode = Some(mode);
+                    info!(?mode, "backend mode changed");
+                    self.push_tray_connected(self.status == ConnectionStatus::Connected)
+                }
+                events::AppEvent::NothingAvailable => {
+                    self.status = ConnectionStatus::Unavailable;
+                    self.battery_percentage = None;
+                    self.push_tray_connected(false)
+                }
+            },
+            Message::ShowWindow => {
+                if let Some(id) = self.window {
+                    window::gain_focus(id)
+                } else {
+                    let (_id, open) = window::open(window_settings());
+                    open.map(Message::WindowOpened)
+                }
+            }
+            Message::WindowOpened(id) => {
+                self.window = Some(id);
                 IcedTask::none()
             }
-            Message::ShowWindow => {
-                // TODO: toggle window visibility
+            Message::WindowClosed(id) => {
+                if self.window == Some(id) {
+                    self.window = None;
+                }
+                if self.tray_available {
+                    IcedTask::none()
+                } else {
+                    // No tray and no window: nothing left to interact with.
+                    iced::exit()
+                }
+            }
+            Message::TrayReady(handle) => {
+                info!("tray ready");
+                self.tray = Some(handle);
+                // Reflect the current connection state immediately.
+                self.push_tray_connected(self.status == ConnectionStatus::Connected)
+            }
+            Message::TrayUnavailable => {
+                self.tray_available = false;
                 IcedTask::none()
             }
             Message::Quit => iced::exit(),
         }
     }
 
-    fn view(&self) -> Element<'_, Message> {
+    fn view(&self, _window: window::Id) -> Element<'_, Message> {
         let status_text = match (&self.status, self.backend_mode) {
             (ConnectionStatus::Connecting, _) => "Mouse: Connecting...".to_string(),
             (ConnectionStatus::Connected, Some(BackendMode::Direct)) => {
@@ -189,13 +277,47 @@ impl App {
         .into()
     }
 
-    fn theme(&self) -> Theme {
+    fn theme(&self, _window: window::Id) -> Theme {
         Theme::Dark
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run(event_stream).map(Message::EventReceived)
+        Subscription::batch([
+            Subscription::run(event_stream).map(Message::EventReceived),
+            Subscription::run(tray_stream),
+            window::close_events().map(Message::WindowClosed),
+        ])
     }
+}
+
+/// Spawn the ksni tray and bridge its menu activations into app messages.
+fn tray_stream() -> impl Stream<Item = Message> {
+    iced::stream::channel(
+        16,
+        |mut out: iced::futures::channel::mpsc::Sender<Message>| async move {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            match ScyroxTray::new(tx).spawn().await {
+                Ok(handle) => {
+                    out.send(Message::TrayReady(TrayHandle(handle))).await.ok();
+                }
+                Err(e) => {
+                    warn!("tray unavailable: {e}");
+                    out.send(Message::TrayUnavailable).await.ok();
+                    return;
+                }
+            }
+
+            while let Some(cmd) = rx.recv().await {
+                let msg = match cmd {
+                    TrayCommand::ShowWindow => Message::ShowWindow,
+                    TrayCommand::Quit => Message::Quit,
+                };
+                if out.send(msg).await.is_err() {
+                    return;
+                }
+            }
+        },
+    )
 }
 
 /// Fetch initial state: try daemon first, then direct HID.
@@ -397,13 +519,12 @@ async fn connect_and_stream_direct(
     }
 }
 
-/// Run the iced application.
+/// Run the iced application as a daemon (persists in the tray with no window).
 pub fn run() -> anyhow::Result<()> {
-    iced::application(App::new, App::update, App::view)
+    iced::daemon(App::boot, App::update, App::view)
+        .title("Scyrox")
         .theme(App::theme)
         .subscription(App::subscription)
-        .window_size((480.0, 360.0))
-        .centered()
         .run()?;
 
     Ok(())
