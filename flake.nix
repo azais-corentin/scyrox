@@ -140,6 +140,8 @@
           nixfmt
           # gtk3 build headers for scyrox-tray (tray-icon gtk feature + tao).
           gtk3
+          # runs scripts/plot_battery.py
+          uv
         ];
 
         # Runtime libraries for scyrox-gui (iced) and scyrox-tray

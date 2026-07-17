@@ -7,3 +7,6 @@
 # Added by cargo
 
 /target
+
+# scripts/plot_battery.py default output
+/battery.html
