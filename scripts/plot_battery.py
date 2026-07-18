@@ -7,8 +7,9 @@
 
 Reads the JSONL battery log written by scyroxd (see
 crates/scyroxd/src/battery_log.rs), and renders voltage, device/estimated
-percentage, charging shading, sleep shading (device_offline refresh errors),
-and connect/disconnect markers on one continuous real-time axis.
+percentage, charging shading, and sleep shading (device_offline refresh
+errors). Disconnected periods and daemon downtime are cut from the time axis
+via plotly rangebreaks and marked with "cut <duration>" seams.
 """
 
 import argparse
@@ -16,7 +17,7 @@ import json
 import statistics
 import sys
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -31,11 +32,9 @@ KNOWN_EVENTS = {
 
 SLEEP_FILL = "rgba(120,120,120,0.30)"
 CHARGING_FILL = "rgba(46,160,67,0.15)"
-DISCONNECTED_FILL = "rgba(220,60,60,0.15)"
 # Legend swatches: same hues at ~0.5 opacity so they are visible.
 SLEEP_SWATCH = "rgba(120,120,120,0.5)"
 CHARGING_SWATCH = "rgba(46,160,67,0.5)"
-DISCONNECTED_SWATCH = "rgba(220,60,60,0.5)"
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,15 +173,21 @@ def build_figure(events: list[dict], log_path: Path) -> go.Figure:
 
     add_sleep_spans(fig, events)
     add_charging_spans(fig, samples)
-    add_disconnect_spans(fig, events)
-    add_boundaries(fig, events)
+    cut_spans = compute_cut_spans(events)
+    add_cut_seams(fig, cut_spans)
+    add_boundaries(fig, events, cut_spans)
 
     first_ts = ts(events[0])
     last_ts = ts(events[-1])
+    rangebreaks = []
+    for x0, x1 in cut_spans:
+        span_ms = (x1 - x0).total_seconds() * 1000
+        eps = timedelta(milliseconds=min(1000, span_ms / 4))
+        rangebreaks.append(dict(bounds=[x0 + eps, x1 - eps]))
     fig.update_layout(
         title=f"scyroxd battery log — {log_path} ({first_ts:%Y-%m-%d %H:%M} → {last_ts:%Y-%m-%d %H:%M})",
         hovermode="x unified",
-        xaxis=dict(title="Time"),
+        xaxis=dict(title="Time", rangebreaks=rangebreaks),
         yaxis=dict(title="Battery (%)", range=[0, 105]),
         yaxis2=dict(title="Voltage (mV)", overlaying="y", side="right"),
     )
@@ -266,10 +271,26 @@ def add_charging_spans(fig: go.Figure, samples: list[dict]) -> None:
         add_legend_swatch(fig, "Charging", CHARGING_SWATCH)
 
 
-def add_disconnect_spans(fig: go.Figure, events: list[dict]) -> None:
-    """From each device_disconnected to the next device_connected in the same
-    session, else to the session's last event."""
+def format_duration(seconds: float) -> str:
+    """Two most significant units, e.g. '1d 4h', '2h 13m', '5m 12s', '45s'."""
+    seconds = int(round(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = [(days, "d"), (hours, "h"), (minutes, "m"), (secs, "s")]
+    # Drop leading zero units, then keep at most the first two remaining.
+    while len(parts) > 1 and parts[0][0] == 0:
+        parts.pop(0)
+    parts = parts[:2]
+    return " ".join(f"{v}{u}" for v, u in parts if not (v == 0 and len(parts) > 1)) or "0s"
+
+
+def compute_cut_spans(events: list[dict]) -> list:
+    """Time windows removed from the x-axis: disconnected spans and daemon
+    downtime, merged into non-overlapping intervals."""
     spans = []
+    # Disconnected spans: each device_disconnected to the next device_connected
+    # in the same session, else to the session's last event.
     for i, e in enumerate(events):
         if e["event"] != "device_disconnected":
             continue
@@ -283,16 +304,36 @@ def add_disconnect_spans(fig: go.Figure, events: list[dict]) -> None:
                 break
         if end is not None:
             spans.append((ts(e), ts(end)))
-
+    # Daemon downtime: gaps between consecutive events in different sessions.
+    for a, b in zip(events, events[1:]):
+        if a["session_started_unix_ms"] != b["session_started_unix_ms"]:
+            spans.append((ts(a), ts(b)))
+    # Merge overlapping/touching spans; drop empty ones.
+    spans.sort(key=lambda s: s[0])
+    merged: list = []
     for x0, x1 in spans:
-        fig.add_vrect(
-            x0=x0, x1=x1, fillcolor=DISCONNECTED_FILL, opacity=1, line_width=0, layer="below"
+        if x1 <= x0:
+            continue
+        if merged and x0 <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], x1))
+        else:
+            merged.append((x0, x1))
+    return merged
+
+
+def add_cut_seams(fig: go.Figure, spans: list) -> None:
+    """Mark each removed window with a dashed vline at the resume point,
+    labeled with the skipped duration."""
+    for x0, x1 in spans:
+        fig.add_vline(
+            x=x1,
+            line=dict(color="#888888", dash="dash"),
+            annotation_text=f"cut {format_duration((x1 - x0).total_seconds())}",
+            annotation_position="bottom right",
         )
-    if spans:
-        add_legend_swatch(fig, "Disconnected", DISCONNECTED_SWATCH)
 
 
-def add_boundaries(fig: go.Figure, events: list[dict]) -> None:
+def add_boundaries(fig: go.Figure, events: list[dict], cut_spans: list) -> None:
     # Session starts: first event of each session_started_unix_ms value.
     seen_sessions: set[int] = set()
     for e in events:
@@ -307,6 +348,10 @@ def add_boundaries(fig: go.Figure, events: list[dict]) -> None:
             )
 
     for e in events:
+        if e["event"] in ("device_connected", "device_disconnected") and any(
+            x0 <= ts(e) <= x1 for x0, x1 in cut_spans
+        ):
+            continue
         if e["event"] == "device_connected":
             fig.add_vline(
                 x=ts(e),
