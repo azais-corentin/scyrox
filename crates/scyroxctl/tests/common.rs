@@ -146,6 +146,36 @@ pub fn restore_config(config: &Value) {
             scyroxctl().args(["set", cmd, arg]).assert().success();
         }
     }
+
+    // Restore DPI stages (empty array means DPI was unavailable; leave untouched)
+    if let Some(stages) = config["dpi_stages"].as_array()
+        && !stages.is_empty()
+    {
+        scyroxctl()
+            .args(["set", "dpi-count", &stages.len().to_string()])
+            .assert()
+            .success();
+        for (i, stage) in stages.iter().enumerate() {
+            if let Some(value) = stage["value"].as_u64() {
+                scyroxctl()
+                    .args(["set", "dpi", &value.to_string(), "--stage", &i.to_string()])
+                    .assert()
+                    .success();
+            }
+            if let Some(color) = stage["color"].as_str() {
+                scyroxctl()
+                    .args(["set", "dpi-color", color, "--stage", &i.to_string()])
+                    .assert()
+                    .success();
+            }
+        }
+        if let Some(idx) = config["current_dpi_index"].as_u64() {
+            scyroxctl()
+                .args(["set", "dpi-stage", &idx.to_string()])
+                .assert()
+                .success();
+        }
+    }
 }
 
 /// RAII guard for config restoration

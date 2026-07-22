@@ -81,6 +81,8 @@ pub enum GetWhat {
     Lod,
     /// Get sleep timeout
     SleepTimeout,
+    /// Get DPI stages and active stage
+    Dpi,
 }
 
 // =============================================================================
@@ -136,6 +138,38 @@ pub enum SetWhat {
         #[arg(value_enum)]
         state: BoolArg,
     },
+    /// Set DPI value for a stage
+    Dpi {
+        /// DPI value (50-26000, steps of 50)
+        value: u16,
+        /// Stage index 0-7 (default: active stage)
+        #[arg(short, long)]
+        stage: Option<u8>,
+    },
+    /// Set the active DPI stage
+    DpiStage {
+        /// Stage index (0-7)
+        index: u8,
+    },
+    /// Set the number of active DPI stages
+    DpiCount {
+        /// Stage count (1-8)
+        count: u8,
+    },
+    /// Set a DPI stage's color
+    DpiColor {
+        /// Color as RRGGBB hex (leading # optional)
+        #[arg(value_parser = parse_hex_color)]
+        color: [u8; 3],
+        /// Stage index 0-7 (default: active stage)
+        #[arg(short, long)]
+        stage: Option<u8>,
+    },
+}
+
+/// clap value parser: parse an "RRGGBB" (or "#RRGGBB") hex color into RGB bytes.
+fn parse_hex_color(s: &str) -> Result<[u8; 3], String> {
+    scyrox::parse_color_hex(s).ok_or_else(|| format!("Invalid color '{s}': expected RRGGBB hex"))
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]

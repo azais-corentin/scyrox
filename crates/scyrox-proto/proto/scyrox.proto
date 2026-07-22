@@ -24,6 +24,10 @@ service Scyrox {
   rpc SetRippleControl    (SetBoolRequest           ) returns (Empty                  );
   rpc SetHighSpeedMode    (SetBoolRequest           ) returns (Empty                  );
   rpc SetLongDistanceMode (SetBoolRequest           ) returns (Empty                  );
+  rpc SetDpiValue         (SetDpiValueRequest       ) returns (Empty                  );
+  rpc SetDpiColor         (SetDpiColorRequest       ) returns (Empty                  );
+  rpc SetCurrentDpiIndex  (SetCurrentDpiIndexRequest) returns (Empty                  );
+  rpc SetDpiCount         (SetDpiCountRequest       ) returns (Empty                  );
   
   // Profiles
   rpc ListProfiles      (Empty                   ) returns (ProfileList);
@@ -100,13 +104,22 @@ message FirmwareInfo {
 // Configuration
 // =============================================================================
 message MouseConfig {
-  PollingRate     polling_rate          = 1;
-  LiftOffDistance lift_off_distance     = 2;
-  uint32          sleep_timeout_seconds = 3;
-  bool            angle_snapping        = 4;
-  bool            ripple_control        = 5;
-  bool            high_speed_mode       = 6;
-  bool            long_distance_mode    = 7;
+           PollingRate     polling_rate          = 1;
+           LiftOffDistance lift_off_distance     = 2;
+           uint32          sleep_timeout_seconds = 3;
+           bool            angle_snapping        = 4;
+           bool            ripple_control        = 5;
+           bool            high_speed_mode       = 6;
+           bool            long_distance_mode    = 7;
+  repeated DpiStage        dpi_stages            = 8; // empty = leave device DPI untouched
+           uint32          current_dpi_index     = 9;
+}
+
+message DpiStage {
+  uint32 value = 1; // 50-26000, steps of 50
+  uint32 red   = 2;
+  uint32 green = 3;
+  uint32 blue  = 4;
 }
 
 message SetPollingRateRequest {
@@ -127,6 +140,26 @@ message SetSleepTimeoutResponse {
 
 message SetBoolRequest {
   bool enabled = 1;
+}
+
+message SetDpiValueRequest {
+  optional uint32 stage = 1; // 0-7; absent = active stage
+           uint32 value = 2;
+}
+
+message SetDpiColorRequest {
+  optional uint32 stage = 1; // 0-7; absent = active stage
+           uint32 red   = 2;
+           uint32 green = 3;
+           uint32 blue  = 4;
+}
+
+message SetCurrentDpiIndexRequest {
+  uint32 index = 1; // 0-7
+}
+
+message SetDpiCountRequest {
+  uint32 count = 1; // 1-8
 }
 
 // =============================================================================

@@ -68,6 +68,40 @@ impl TryFrom<ProtoLod> for scyrox::LiftOffDistance {
 }
 
 // =============================================================================
+// DpiStage Conversions
+// =============================================================================
+
+impl From<&scyrox::DpiStage> for crate::DpiStage {
+    fn from(stage: &scyrox::DpiStage) -> Self {
+        crate::DpiStage {
+            value: stage.value as u32,
+            red: stage.color[0] as u32,
+            green: stage.color[1] as u32,
+            blue: stage.color[2] as u32,
+        }
+    }
+}
+
+impl TryFrom<&crate::DpiStage> for scyrox::DpiStage {
+    type Error = ConversionError;
+
+    fn try_from(stage: &crate::DpiStage) -> Result<Self, Self::Error> {
+        let value = u16::try_from(stage.value)
+            .map_err(|_| ConversionError::InvalidDpiValue(stage.value))?;
+        let component =
+            |c: u32| u8::try_from(c).map_err(|_| ConversionError::InvalidDpiColorComponent(c));
+        Ok(scyrox::DpiStage {
+            value,
+            color: [
+                component(stage.red)?,
+                component(stage.green)?,
+                component(stage.blue)?,
+            ],
+        })
+    }
+}
+
+// =============================================================================
 // MouseConfig Conversions
 // =============================================================================
 
@@ -81,6 +115,12 @@ impl From<&scyrox::MouseConfig> for ProtoConfig {
             ripple_control: config.ripple_control,
             high_speed_mode: config.high_speed_mode,
             long_distance_mode: config.long_distance_mode,
+            dpi_stages: config
+                .dpi_stages
+                .iter()
+                .map(crate::DpiStage::from)
+                .collect(),
+            current_dpi_index: config.current_dpi_index as u32,
         }
     }
 }
@@ -108,6 +148,13 @@ impl TryFrom<&ProtoConfig> for scyrox::MouseConfig {
             ripple_control: proto.ripple_control,
             high_speed_mode: proto.high_speed_mode,
             long_distance_mode: proto.long_distance_mode,
+            dpi_stages: proto
+                .dpi_stages
+                .iter()
+                .map(scyrox::DpiStage::try_from)
+                .collect::<Result<_, _>>()?,
+            current_dpi_index: u8::try_from(proto.current_dpi_index)
+                .map_err(|_| ConversionError::InvalidDpiIndex(proto.current_dpi_index))?,
             ..Default::default()
         })
     }
@@ -163,6 +210,12 @@ pub enum ConversionError {
     InvalidPollingRate(i32),
     /// Invalid lift-off distance value.
     InvalidLiftOffDistance(i32),
+    /// Invalid DPI value (exceeds u16 range).
+    InvalidDpiValue(u32),
+    /// Invalid DPI color component (exceeds u8 range).
+    InvalidDpiColorComponent(u32),
+    /// Invalid DPI index (exceeds u8 range).
+    InvalidDpiIndex(u32),
 }
 
 impl std::fmt::Display for ConversionError {
@@ -180,8 +233,92 @@ impl std::fmt::Display for ConversionError {
             ConversionError::InvalidLiftOffDistance(v) => {
                 write!(f, "invalid lift-off distance value: {}", v)
             }
+            ConversionError::InvalidDpiValue(v) => {
+                write!(f, "invalid DPI value: {}", v)
+            }
+            ConversionError::InvalidDpiColorComponent(v) => {
+                write!(f, "invalid DPI color component: {}", v)
+            }
+            ConversionError::InvalidDpiIndex(v) => {
+                write!(f, "invalid DPI index: {}", v)
+            }
         }
     }
 }
 
 impl std::error::Error for ConversionError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dpi_stage_roundtrip() {
+        let domain = scyrox::DpiStage {
+            value: 1600,
+            color: [255, 128, 0],
+        };
+        let proto = crate::DpiStage::from(&domain);
+        assert_eq!(proto.value, 1600);
+        assert_eq!((proto.red, proto.green, proto.blue), (255, 128, 0));
+        assert_eq!(scyrox::DpiStage::try_from(&proto).unwrap(), domain);
+    }
+
+    #[test]
+    fn dpi_stage_rejects_out_of_range() {
+        let bad_value = crate::DpiStage {
+            value: 70_000,
+            red: 0,
+            green: 0,
+            blue: 0,
+        };
+        assert_eq!(
+            scyrox::DpiStage::try_from(&bad_value),
+            Err(ConversionError::InvalidDpiValue(70_000))
+        );
+        let bad_color = crate::DpiStage {
+            value: 800,
+            red: 300,
+            green: 0,
+            blue: 0,
+        };
+        assert_eq!(
+            scyrox::DpiStage::try_from(&bad_color),
+            Err(ConversionError::InvalidDpiColorComponent(300))
+        );
+    }
+
+    #[test]
+    fn mouse_config_dpi_roundtrip() {
+        let domain = scyrox::MouseConfig {
+            dpi_stages: vec![
+                scyrox::DpiStage {
+                    value: 800,
+                    color: [255, 0, 0],
+                },
+                scyrox::DpiStage {
+                    value: 1600,
+                    color: [255, 255, 255],
+                },
+            ],
+            current_dpi_index: 1,
+            ..Default::default()
+        };
+        let proto = ProtoConfig::from(&domain);
+        assert_eq!(proto.dpi_stages.len(), 2);
+        assert_eq!(proto.current_dpi_index, 1);
+        let back = scyrox::MouseConfig::try_from(&proto).unwrap();
+        assert_eq!(back.dpi_stages, domain.dpi_stages);
+        assert_eq!(back.current_dpi_index, 1);
+    }
+
+    #[test]
+    fn mouse_config_rejects_bad_dpi_index() {
+        let mut proto = ProtoConfig::from(&scyrox::MouseConfig::default());
+        proto.current_dpi_index = 999;
+        assert_eq!(
+            scyrox::MouseConfig::try_from(&proto).unwrap_err(),
+            ConversionError::InvalidDpiIndex(999)
+        );
+    }
+}

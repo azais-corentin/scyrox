@@ -518,6 +518,18 @@ pub fn encode_dpi(dpi: u16) -> [u8; 4] {
     [low, low, byte2, checksum]
 }
 
+/// Encode an RGB DPI-stage color to 4-byte wire format.
+///
+/// Each 4-byte DPI color entry stores R/G/B in bytes 0-2 and a complement
+/// checksum in byte 3 (`0x55 - (r + g + b)`), mirroring the per-entry checksum
+/// used by DPI values. Writing byte 3 as anything else makes the device reject
+/// the write.
+pub fn encode_dpi_color(color: [u8; 3]) -> [u8; 4] {
+    let sum = color[0].wrapping_add(color[1]).wrapping_add(color[2]);
+    let checksum = 0x55u8.wrapping_sub(sum);
+    [color[0], color[1], color[2], checksum]
+}
+
 /// Decode a 4-byte DPI value from wire format.
 ///
 /// Per protocol spec:
@@ -852,6 +864,27 @@ mod tests {
             let encoded = encode_dpi(dpi);
             let decoded = decode_dpi(&encoded);
             assert_eq!(decoded, dpi, "DPI {} round-trip failed", dpi);
+        }
+    }
+
+    #[test]
+    fn test_encode_dpi_color_checksum() {
+        // Bytes 0-2 carry RGB; byte 3 is the complement checksum 0x55 - (r+g+b).
+        assert_eq!(
+            encode_dpi_color([0x12, 0x34, 0x56]),
+            [
+                0x12,
+                0x34,
+                0x56,
+                0x55u8.wrapping_sub(0x12u8.wrapping_add(0x34).wrapping_add(0x56))
+            ]
+        );
+        // The full 4-byte entry sums to 0x55 (mod 256), matching the DPI-value scheme.
+        for color in [[0, 0, 0], [255, 255, 255], [255, 0, 128], [1, 2, 3]] {
+            let entry = encode_dpi_color(color);
+            let sum = entry.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+            assert_eq!(sum, 0x55, "checksum invariant failed for {color:?}");
+            assert_eq!([entry[0], entry[1], entry[2]], color);
         }
     }
 

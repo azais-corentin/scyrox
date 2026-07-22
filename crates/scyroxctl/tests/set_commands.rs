@@ -387,3 +387,77 @@ fn test_multiple_settings_persist() {
     assert!((lod - 2.0).abs() < 0.01);
     assert_eq!(config["angle_snapping"], true);
 }
+
+// ============ DPI Tests ============
+
+#[test]
+fn test_set_dpi_value_stage() {
+    assert_device_connected();
+    let _guard = ConfigGuard::new();
+
+    scyroxctl()
+        .args(["set", "dpi", "1600", "--stage", "0"])
+        .assert()
+        .success();
+
+    let config = get_config_json();
+    assert_eq!(config["dpi_stages"][0]["value"], 1600);
+}
+
+#[test]
+fn test_set_dpi_color_stage() {
+    assert_device_connected();
+    let _guard = ConfigGuard::new();
+
+    scyroxctl()
+        .args(["set", "dpi-color", "FF0000", "--stage", "0"])
+        .assert()
+        .success();
+
+    let config = get_config_json();
+    assert_eq!(config["dpi_stages"][0]["color"], "FF0000");
+}
+
+#[test]
+fn test_set_dpi_stage_active() {
+    assert_device_connected();
+    let _guard = ConfigGuard::new();
+
+    scyroxctl()
+        .args(["set", "dpi-count", "4"])
+        .assert()
+        .success();
+    scyroxctl()
+        .args(["set", "dpi-stage", "1"])
+        .assert()
+        .success();
+
+    let config = get_config_json();
+    assert_eq!(config["current_dpi_index"], 1);
+}
+
+#[test]
+fn test_set_dpi_count() {
+    assert_device_connected();
+    let _guard = ConfigGuard::new();
+
+    scyroxctl()
+        .args(["set", "dpi-count", "4"])
+        .assert()
+        .success();
+
+    let config = get_config_json();
+    assert_eq!(config["dpi_stages"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn test_set_dpi_invalid_value_rejected() {
+    assert_device_connected();
+    let _guard = ConfigGuard::new();
+
+    // 47 is not a multiple of 50 / below the valid range; the device setter rejects it.
+    scyroxctl()
+        .args(["set", "dpi", "47", "--stage", "0"])
+        .assert()
+        .failure();
+}

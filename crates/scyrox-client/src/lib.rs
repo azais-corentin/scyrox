@@ -39,6 +39,14 @@ pub trait Backend: Send + Sync {
     async fn set_ripple_control(&self, enabled: bool) -> Result<()>;
     async fn set_high_speed_mode(&self, enabled: bool) -> Result<()>;
     async fn set_long_distance_mode(&self, enabled: bool) -> Result<()>;
+    /// Set a DPI stage's value. `stage: None` targets the active stage.
+    async fn set_dpi_value(&self, stage: Option<u8>, value: u16) -> Result<()>;
+    /// Set a DPI stage's color. `stage: None` targets the active stage.
+    async fn set_dpi_color(&self, stage: Option<u8>, color: [u8; 3]) -> Result<()>;
+    /// Switch the active DPI stage (0-7).
+    async fn set_current_dpi_index(&self, index: u8) -> Result<()>;
+    /// Set the number of active DPI stages (1-8).
+    async fn set_dpi_count(&self, count: u8) -> Result<()>;
 
     // Profiles (only available with daemon)
     async fn list_profiles(&self) -> Result<Vec<ProfileInfo>>;

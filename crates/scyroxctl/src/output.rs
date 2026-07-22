@@ -3,7 +3,7 @@
 //! This module provides a unified interface for outputting command results
 //! in different formats (text, JSON, etc.).
 
-use scyrox::{BatteryStatus, FirmwareInfo, MouseConfig};
+use scyrox::{BatteryStatus, DpiStage, FirmwareInfo, MouseConfig, format_color_hex};
 use serde::Serialize;
 
 use crate::cli::OutputFormat;
@@ -37,6 +37,28 @@ fn print_config_fields(config: &MouseConfig, indent: &str) {
             "Off"
         }
     );
+    print_dpi_block(config, indent);
+}
+
+/// Print the DPI stages block with the given indent.
+fn print_dpi_block(config: &MouseConfig, indent: &str) {
+    if config.dpi_stages.is_empty() {
+        println!("{indent}DPI Stages:        (unavailable)");
+        return;
+    }
+    println!("{indent}DPI Stages:        {}", config.dpi_stages.len());
+    for (i, stage) in config.dpi_stages.iter().enumerate() {
+        let marker = if i as u8 == config.current_dpi_index {
+            "*"
+        } else {
+            " "
+        };
+        println!(
+            "{indent}  {marker} {i}: {} DPI  #{}",
+            stage.value,
+            format_color_hex(stage.color)
+        );
+    }
 }
 
 /// Output handler for formatting command results.
@@ -65,6 +87,27 @@ impl Output {
             }
             OutputFormat::Json => {
                 println!("{}", serde_json::to_string(config).unwrap_or_default());
+            }
+        }
+    }
+
+    /// Print DPI stages and the active stage.
+    pub fn print_dpi(&self, config: &MouseConfig) {
+        match self.format {
+            OutputFormat::Text => {
+                print_dpi_block(config, "");
+            }
+            OutputFormat::Json => {
+                #[derive(Serialize)]
+                struct DpiOutput<'a> {
+                    current_dpi_index: u8,
+                    dpi_stages: &'a [DpiStage],
+                }
+                let out = DpiOutput {
+                    current_dpi_index: config.current_dpi_index,
+                    dpi_stages: &config.dpi_stages,
+                };
+                println!("{}", serde_json::to_string(&out).unwrap_or_default());
             }
         }
     }

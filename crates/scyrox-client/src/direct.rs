@@ -89,6 +89,34 @@ impl Backend for DirectBackend {
         Ok(mouse.set_long_distance_mode(enabled).await?)
     }
 
+    async fn set_dpi_value(&self, stage: Option<u8>, value: u16) -> Result<()> {
+        let mouse = self.mouse.lock().await;
+        let stage = match stage {
+            Some(s) => s,
+            None => mouse.get_current_dpi_index().await?,
+        };
+        Ok(mouse.set_dpi_value(stage, value).await?)
+    }
+
+    async fn set_dpi_color(&self, stage: Option<u8>, color: [u8; 3]) -> Result<()> {
+        let mouse = self.mouse.lock().await;
+        let stage = match stage {
+            Some(s) => s,
+            None => mouse.get_current_dpi_index().await?,
+        };
+        Ok(mouse.set_dpi_color(stage, color).await?)
+    }
+
+    async fn set_current_dpi_index(&self, index: u8) -> Result<()> {
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_current_dpi_index(index).await?)
+    }
+
+    async fn set_dpi_count(&self, count: u8) -> Result<()> {
+        let mouse = self.mouse.lock().await;
+        Ok(mouse.set_dpi_count(count).await?)
+    }
+
     // Profile operations are not available in direct mode
     async fn list_profiles(&self) -> Result<Vec<ProfileInfo>> {
         Err(anyhow!(PROFILE_REQUIRES_DAEMON))

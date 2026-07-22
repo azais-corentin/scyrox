@@ -17,7 +17,8 @@ use scyrox_proto::scyrox_client::ScyroxClient;
 use scyrox_proto::{
     ApplyProfileRequest, DeleteProfileRequest, Empty, GetProfileRequest,
     LiftOffDistance as ProtoLod, PollingRate as ProtoRate, SetBatteryLogPathRequest,
-    SetBoolRequest, SetDefaultProfileRequest, SetLiftOffDistanceRequest,
+    SetBoolRequest, SetCurrentDpiIndexRequest, SetDefaultProfileRequest, SetDpiColorRequest,
+    SetDpiCountRequest, SetDpiValueRequest, SetLiftOffDistanceRequest,
     SetLowBatteryThresholdRequest, SetPollingRateRequest, SetSleepTimeoutRequest,
 };
 
@@ -213,6 +214,50 @@ impl Backend for DaemonClient {
         let mut client = self.client.lock().await;
         client
             .set_long_distance_mode(SetBoolRequest { enabled })
+            .await?;
+        Ok(())
+    }
+
+    async fn set_dpi_value(&self, stage: Option<u8>, value: u16) -> Result<()> {
+        let mut client = self.client.lock().await;
+        client
+            .set_dpi_value(SetDpiValueRequest {
+                stage: stage.map(u32::from),
+                value: value as u32,
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn set_dpi_color(&self, stage: Option<u8>, color: [u8; 3]) -> Result<()> {
+        let mut client = self.client.lock().await;
+        client
+            .set_dpi_color(SetDpiColorRequest {
+                stage: stage.map(u32::from),
+                red: color[0] as u32,
+                green: color[1] as u32,
+                blue: color[2] as u32,
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn set_current_dpi_index(&self, index: u8) -> Result<()> {
+        let mut client = self.client.lock().await;
+        client
+            .set_current_dpi_index(SetCurrentDpiIndexRequest {
+                index: index as u32,
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn set_dpi_count(&self, count: u8) -> Result<()> {
+        let mut client = self.client.lock().await;
+        client
+            .set_dpi_count(SetDpiCountRequest {
+                count: count as u32,
+            })
             .await?;
         Ok(())
     }

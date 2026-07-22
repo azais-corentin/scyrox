@@ -3,7 +3,7 @@
 use std::fmt;
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use strum::Display;
 
 /// Polling rate options.
@@ -281,6 +281,10 @@ pub struct MouseConfig {
     pub sensor_mode: SensorMode,
     /// 20K sensor mode enabled.
     pub sensor_20k: bool,
+    /// DPI stages (empty = leave device DPI untouched when applying).
+    pub dpi_stages: Vec<DpiStage>,
+    /// Active DPI stage index (0-7). Ignored when `dpi_stages` is empty.
+    pub current_dpi_index: u8,
 }
 
 impl Default for MouseConfig {
@@ -299,6 +303,8 @@ impl Default for MouseConfig {
             performance_time: SleepTime::Min1,
             sensor_mode: SensorMode::HighPerformance,
             sensor_20k: false,
+            dpi_stages: Vec::new(),
+            current_dpi_index: 0,
         }
     }
 }
@@ -376,12 +382,47 @@ pub enum PairStatus {
 }
 
 /// DPI stage configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DpiStage {
     /// DPI value (50-26000, in steps of 50).
     pub value: u16,
-    /// RGB color for this DPI stage.
+    /// RGB color for this DPI stage, serialized as an uppercase "RRGGBB" hex string.
+    #[serde(with = "color_hex")]
     pub color: [u8; 3],
+}
+
+/// Format an RGB color as an uppercase hex string, e.g. "FF0000".
+pub fn format_color_hex(color: [u8; 3]) -> String {
+    format!("{:02X}{:02X}{:02X}", color[0], color[1], color[2])
+}
+
+/// Parse "RRGGBB" or "#RRGGBB" (case-insensitive) into RGB. None on any other input.
+pub fn parse_color_hex(s: &str) -> Option<[u8; 3]> {
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some([r, g, b])
+}
+
+/// Serde helper: serialize `[u8; 3]` RGB as an uppercase "RRGGBB" hex string.
+mod color_hex {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::{format_color_hex, parse_color_hex};
+
+    pub fn serialize<S: Serializer>(color: &[u8; 3], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format_color_hex(*color))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 3], D::Error> {
+        let s = String::deserialize(deserializer)?;
+        parse_color_hex(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid RRGGBB hex color: {s}")))
+    }
 }
 
 impl Default for DpiStage {
@@ -1645,6 +1686,23 @@ pub enum Notification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_color_hex_roundtrip_and_parsing() {
+        assert_eq!(format_color_hex([255, 0, 0]), "FF0000");
+        assert_eq!(format_color_hex([0, 255, 255]), "00FFFF");
+        assert_eq!(parse_color_hex("FF0000"), Some([255, 0, 0]));
+        assert_eq!(parse_color_hex("#ff0000"), Some([255, 0, 0]));
+        assert_eq!(parse_color_hex("00ffff"), Some([0, 255, 255]));
+        // Round-trip through both directions.
+        let c = [18, 52, 86];
+        assert_eq!(parse_color_hex(&format_color_hex(c)), Some(c));
+        // Rejections.
+        assert_eq!(parse_color_hex("F00"), None);
+        assert_eq!(parse_color_hex("GG0000"), None);
+        assert_eq!(parse_color_hex("FF00000"), None);
+        assert_eq!(parse_color_hex(""), None);
+    }
 
     #[test]
     fn test_hid_key_code_roundtrip_and_display() {

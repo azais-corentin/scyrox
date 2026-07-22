@@ -52,4 +52,5 @@ pub use types::{
     MacroEvent, MacroEventKeyType, MacroKeyConfig, MacroMouseButton, MediaKey, ModifierKey,
     MouseButton, MouseConfig, Notification, PairStatus, PollingRate, ScrollWheelDirection,
     SensorMode, ShortcutKey, ShortcutKeyEvent, ShortcutKeyType, SleepTime, StatusChangeFlags,
+    format_color_hex, parse_color_hex,
 };

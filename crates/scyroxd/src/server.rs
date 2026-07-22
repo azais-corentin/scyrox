@@ -21,7 +21,8 @@ use scyrox_proto::{
     DaemonInfo, DeleteProfileRequest, DeviceStatus, Empty, Event, FirmwareInfo as ProtoFirmware,
     GetProfileRequest, LiftOffDistance as ProtoLod, LowBatteryAlert, PollingRate as ProtoRate,
     Profile, ProfileApplied, ProfileList, Scyrox, SetBatteryLogPathRequest, SetBoolRequest,
-    SetDefaultProfileRequest, SetLiftOffDistanceRequest, SetLowBatteryThresholdRequest,
+    SetCurrentDpiIndexRequest, SetDefaultProfileRequest, SetDpiColorRequest, SetDpiCountRequest,
+    SetDpiValueRequest, SetLiftOffDistanceRequest, SetLowBatteryThresholdRequest,
     SetPollingRateRequest, SetSleepTimeoutRequest, SetSleepTimeoutResponse, SettingsChanged,
     UpdateProfileRequest, event, hz_to_proto_polling_rate, mm_to_proto_lod,
 };
@@ -974,6 +975,94 @@ impl Scyrox for ScyroxService {
         })
     }
 
+    #[instrument(skip(self, request))]
+    async fn set_dpi_value(
+        &self,
+        request: Request<SetDpiValueRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        let value = u16::try_from(req.value).map_err(|_| {
+            Status::invalid_argument(format!("DPI value out of range: {}", req.value))
+        })?;
+        let stage = req
+            .stage
+            .map(u8::try_from)
+            .transpose()
+            .map_err(|_| Status::invalid_argument("DPI stage out of range"))?;
+
+        with_mouse!(self, |mouse| {
+            let stage = match stage {
+                Some(s) => s,
+                None => mouse.get_current_dpi_index().await?,
+            };
+            mouse.set_dpi_value(stage, value).await?;
+            info!(stage, value, "DPI value updated");
+            Ok(Empty {})
+        })
+    }
+
+    #[instrument(skip(self, request))]
+    async fn set_dpi_color(
+        &self,
+        request: Request<SetDpiColorRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = request.into_inner();
+        let stage = req
+            .stage
+            .map(u8::try_from)
+            .transpose()
+            .map_err(|_| Status::invalid_argument("DPI stage out of range"))?;
+        let component = |c: u32| {
+            u8::try_from(c)
+                .map_err(|_| Status::invalid_argument(format!("color component out of range: {c}")))
+        };
+        let color = [
+            component(req.red)?,
+            component(req.green)?,
+            component(req.blue)?,
+        ];
+
+        with_mouse!(self, |mouse| {
+            let stage = match stage {
+                Some(s) => s,
+                None => mouse.get_current_dpi_index().await?,
+            };
+            mouse.set_dpi_color(stage, color).await?;
+            info!(stage, ?color, "DPI color updated");
+            Ok(Empty {})
+        })
+    }
+
+    #[instrument(skip(self, request))]
+    async fn set_current_dpi_index(
+        &self,
+        request: Request<SetCurrentDpiIndexRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let index = u8::try_from(request.into_inner().index)
+            .map_err(|_| Status::invalid_argument("DPI index out of range"))?;
+
+        with_mouse!(self, |mouse| {
+            mouse.set_current_dpi_index(index).await?;
+            info!(index, "Current DPI index updated");
+            Ok(Empty {})
+        })
+    }
+
+    #[instrument(skip(self, request))]
+    async fn set_dpi_count(
+        &self,
+        request: Request<SetDpiCountRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let count = u8::try_from(request.into_inner().count)
+            .map_err(|_| Status::invalid_argument("DPI count out of range"))?;
+
+        with_mouse!(self, |mouse| {
+            mouse.set_dpi_count(count).await?;
+            info!(count, "DPI count updated");
+            Ok(Empty {})
+        })
+    }
+
     // =========================================================================
     // Profiles
     // =========================================================================
@@ -1341,6 +1430,13 @@ fn profile_to_proto(profile: crate::profiles::Profile) -> Profile {
             ripple_control: profile.config.ripple_control,
             high_speed_mode: profile.config.high_speed_mode,
             long_distance_mode: profile.config.long_distance_mode,
+            dpi_stages: profile
+                .config
+                .dpi_stages
+                .iter()
+                .map(scyrox_proto::DpiStage::from)
+                .collect(),
+            current_dpi_index: profile.config.current_dpi_index as u32,
         }),
         is_default: profile.is_default,
     }
@@ -1366,6 +1462,14 @@ fn proto_to_profile_config(proto: &scyrox_proto::MouseConfig) -> Result<ProfileC
         ripple_control: proto.ripple_control,
         high_speed_mode: proto.high_speed_mode,
         long_distance_mode: proto.long_distance_mode,
+        dpi_stages: proto
+            .dpi_stages
+            .iter()
+            .map(scyrox::DpiStage::try_from)
+            .collect::<Result<_, _>>()
+            .map_err(|e| Status::invalid_argument(e.to_string()))?,
+        current_dpi_index: u8::try_from(proto.current_dpi_index)
+            .map_err(|_| Status::invalid_argument("invalid DPI index"))?,
     })
 }
 
@@ -1395,6 +1499,8 @@ fn profile_config_to_mouse_config(config: &ProfileConfig) -> Result<scyrox::Mous
         ripple_control: config.ripple_control,
         high_speed_mode: config.high_speed_mode,
         long_distance_mode: config.long_distance_mode,
+        dpi_stages: config.dpi_stages.clone(),
+        current_dpi_index: config.current_dpi_index,
         ..Default::default()
     })
 }

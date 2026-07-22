@@ -32,6 +32,11 @@ pub struct ProfileConfig {
     pub ripple_control: bool,
     pub high_speed_mode: bool,
     pub long_distance_mode: bool,
+    /// DPI stages; empty (or absent in old profiles) leaves device DPI untouched on apply.
+    #[serde(default)]
+    pub dpi_stages: Vec<scyrox::DpiStage>,
+    #[serde(default)]
+    pub current_dpi_index: u8,
 }
 
 /// Profile storage manager.
@@ -225,6 +230,8 @@ impl From<scyrox::MouseConfig> for ProfileConfig {
             ripple_control: config.ripple_control,
             high_speed_mode: config.high_speed_mode,
             long_distance_mode: config.long_distance_mode,
+            dpi_stages: config.dpi_stages,
+            current_dpi_index: config.current_dpi_index,
         }
     }
 }
@@ -242,6 +249,17 @@ mod tests {
             ripple_control: false,
             high_speed_mode: false,
             long_distance_mode: false,
+            dpi_stages: vec![
+                scyrox::DpiStage {
+                    value: 800,
+                    color: [255, 0, 0],
+                },
+                scyrox::DpiStage {
+                    value: 1600,
+                    color: [255, 255, 255],
+                },
+            ],
+            current_dpi_index: 1,
         }
     }
 
@@ -273,6 +291,41 @@ mod tests {
         assert!(!loaded.is_default);
 
         fs::remove_dir_all(&dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dpi_stages_roundtrip_through_toml() {
+        let (store, dir) = temp_store("dpi-roundtrip");
+        store.init().await.unwrap();
+
+        let created = store
+            .create("DPI Profile".to_string(), test_config())
+            .await
+            .unwrap();
+
+        let loaded = store.get(&created.id).await.unwrap();
+        assert_eq!(loaded.config.dpi_stages.len(), 2);
+        assert_eq!(loaded.config.dpi_stages[0].value, 800);
+        assert_eq!(loaded.config.dpi_stages[0].color, [255, 0, 0]);
+        assert_eq!(loaded.config.current_dpi_index, 1);
+
+        fs::remove_dir_all(&dir).await.unwrap();
+    }
+
+    #[test]
+    fn old_profile_without_dpi_deserializes_to_empty() {
+        let toml = r#"
+            polling_rate_hz = 1000
+            lift_off_distance_mm = 1.0
+            sleep_timeout_seconds = 300
+            angle_snapping = false
+            ripple_control = false
+            high_speed_mode = false
+            long_distance_mode = false
+        "#;
+        let config: ProfileConfig = toml::from_str(toml).unwrap();
+        assert!(config.dpi_stages.is_empty());
+        assert_eq!(config.current_dpi_index, 0);
     }
 
     #[tokio::test]

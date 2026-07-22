@@ -1,7 +1,7 @@
 //! Set commands.
 
 use anyhow::Result;
-use scyrox::{LiftOffDistance, PollingRate};
+use scyrox::{LiftOffDistance, PollingRate, format_color_hex};
 
 use crate::cli::{LodArg, PollingRateArg, SetCommand, SetWhat};
 use crate::output::Output;
@@ -24,6 +24,10 @@ pub async fn run(backend: &dyn Backend, cmd: &SetCommand, output: &Output) -> Re
         SetWhat::LongDistanceMode { state } => {
             set_long_distance_mode(backend, state.to_bool(), output).await
         }
+        SetWhat::Dpi { value, stage } => set_dpi(backend, *value, *stage, output).await,
+        SetWhat::DpiStage { index } => set_dpi_stage(backend, *index, output).await,
+        SetWhat::DpiCount { count } => set_dpi_count(backend, *count, output).await,
+        SetWhat::DpiColor { color, stage } => set_dpi_color(backend, *color, *stage, output).await,
     }
 }
 
@@ -106,5 +110,42 @@ async fn set_long_distance_mode(
         "Long distance mode {}",
         if enabled { "enabled" } else { "disabled" }
     ));
+    Ok(())
+}
+
+async fn set_dpi(
+    backend: &dyn Backend,
+    value: u16,
+    stage: Option<u8>,
+    output: &Output,
+) -> Result<()> {
+    backend.set_dpi_value(stage, value).await?;
+    match stage {
+        Some(s) => output.print_success(&format!("DPI stage {s} set to {value}")),
+        None => output.print_success(&format!("DPI set to {value}")),
+    }
+    Ok(())
+}
+
+async fn set_dpi_stage(backend: &dyn Backend, index: u8, output: &Output) -> Result<()> {
+    backend.set_current_dpi_index(index).await?;
+    output.print_success(&format!("Active DPI stage set to {index}"));
+    Ok(())
+}
+
+async fn set_dpi_count(backend: &dyn Backend, count: u8, output: &Output) -> Result<()> {
+    backend.set_dpi_count(count).await?;
+    output.print_success(&format!("DPI stage count set to {count}"));
+    Ok(())
+}
+
+async fn set_dpi_color(
+    backend: &dyn Backend,
+    color: [u8; 3],
+    stage: Option<u8>,
+    output: &Output,
+) -> Result<()> {
+    backend.set_dpi_color(stage, color).await?;
+    output.print_success(&format!("DPI color set to #{}", format_color_hex(color)));
     Ok(())
 }

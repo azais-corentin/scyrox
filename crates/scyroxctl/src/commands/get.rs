@@ -14,6 +14,7 @@ pub async fn run(backend: &dyn Backend, cmd: &GetCommand, output: &Output) -> Re
         GetWhat::PollingRate => get_polling_rate(backend, output).await,
         GetWhat::Lod => get_lod(backend, output).await,
         GetWhat::SleepTimeout => get_sleep_timeout(backend, output).await,
+        GetWhat::Dpi => get_dpi(backend, output).await,
     }
 }
 
@@ -50,5 +51,11 @@ async fn get_lod(backend: &dyn Backend, output: &Output) -> Result<()> {
 async fn get_sleep_timeout(backend: &dyn Backend, output: &Output) -> Result<()> {
     let config = backend.get_config().await?;
     output.print_value(&format!("{}s", config.sleep_timeout_seconds));
+    Ok(())
+}
+
+async fn get_dpi(backend: &dyn Backend, output: &Output) -> Result<()> {
+    let config = backend.get_config().await?;
+    output.print_dpi(&config);
     Ok(())
 }

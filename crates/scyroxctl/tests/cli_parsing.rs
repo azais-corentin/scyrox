@@ -197,3 +197,21 @@ fn test_daemon_config_rejects_removed_threshold_flag() {
         .failure()
         .stderr(predicate::str::contains("--low-battery-threshold"));
 }
+
+#[test]
+fn test_invalid_dpi_color_rejected() {
+    scyroxctl()
+        .args(["set", "dpi-color", "ZZZZZZ"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("expected RRGGBB hex"));
+}
+
+#[test]
+fn test_set_dpi_help_succeeds() {
+    scyroxctl_raw()
+        .args(["set", "dpi", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("stage"));
+}

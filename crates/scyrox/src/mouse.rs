@@ -536,6 +536,8 @@ impl Mouse {
             performance_time: self.get_performance_time().await?,
             sensor_mode: self.get_sensor_mode().await?,
             sensor_20k: self.get_sensor_20k_mode().await?,
+            dpi_stages: self.get_dpi_stages().await?,
+            current_dpi_index: self.get_current_dpi_index().await?,
         };
         info!("mouse configuration retrieved successfully");
         Ok(config)
@@ -1129,6 +1131,10 @@ impl Mouse {
     }
 
     /// Apply a full configuration.
+    ///
+    /// DPI is applied only when `config.dpi_stages` is non-empty; an empty
+    /// `dpi_stages` leaves the device's DPI settings (values, colors, count,
+    /// and active index) untouched.
     #[instrument(skip_all)]
     pub async fn set_config(&self, config: &MouseConfig) -> Result<()> {
         info!("applying full mouse configuration");
@@ -1149,6 +1155,15 @@ impl Mouse {
         self.set_performance_time(config.performance_time).await?;
         self.set_sensor_mode(config.sensor_mode).await?;
         self.set_sensor_20k_mode(config.sensor_20k).await?;
+
+        if !config.dpi_stages.is_empty() {
+            self.set_dpi_count(config.dpi_stages.len() as u8).await?;
+            for (i, stage) in config.dpi_stages.iter().enumerate() {
+                self.set_dpi_value(i as u8, stage.value).await?;
+                self.set_dpi_color(i as u8, stage.color).await?;
+            }
+            self.set_current_dpi_index(config.current_dpi_index).await?;
+        }
 
         info!("mouse configuration applied successfully");
         Ok(())
@@ -1218,7 +1233,7 @@ impl Mouse {
         info!(stage, ?color, "setting DPI color");
 
         let address = OFFSET_DPI_COLORS + (stage as u16 * 4);
-        let data = [color[0], color[1], color[2], 0x00];
+        let data = encode_dpi_color(color);
 
         self.send_status_sync().await?;
         let cmd = build_flash_write(address, &data);
