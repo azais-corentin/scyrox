@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use directories::ProjectDirs;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, watch};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tonic::{Request, Response, Status};
 use tracing::{debug, info, instrument, warn};
 
@@ -77,7 +78,7 @@ pub struct ScyroxService {
     /// Currently active profile ID (the profile last applied to the mouse).
     active_profile_id: Arc<Mutex<Option<String>>>,
     /// Shutdown signal sender.
-    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    shutdown_tx: watch::Sender<bool>,
     /// Sender for client events (watch_events subscribers).
     client_event_tx: broadcast::Sender<Event>,
 }
@@ -85,20 +86,13 @@ pub struct ScyroxService {
 impl ScyroxService {
     /// Create a new service instance.
     ///
-    /// Returns the service, a shutdown receiver, and a device event receiver to be processed
-    /// by a background task.
+    /// Returns the service and the device event receiver to be processed by a background task.
     pub async fn new(
         config: DaemonConfig,
         dirs: ProjectDirs,
         device_event_rx: broadcast::Receiver<DeviceEvent>,
-    ) -> Result<(
-        Self,
-        tokio::sync::watch::Receiver<bool>,
-        broadcast::Receiver<DeviceEvent>,
-    )> {
-        // Create shutdown channel
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
+        shutdown_tx: watch::Sender<bool>,
+    ) -> Result<(Self, broadcast::Receiver<DeviceEvent>)> {
         // Create client event broadcast channel
         let (client_event_tx, _) = broadcast::channel(32);
 
@@ -139,7 +133,7 @@ impl ScyroxService {
             }
         }
 
-        Ok((service, shutdown_rx, device_event_rx))
+        Ok((service, device_event_rx))
     }
 
     /// Ensure mouse is connected, attempting to reconnect if needed.
@@ -1147,16 +1141,27 @@ impl Scyrox for ScyroxService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::WatchEventsStream>, Status> {
-        let rx = self.client_event_tx.subscribe();
+        let mut events = BroadcastStream::new(self.client_event_tx.subscribe());
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
-        // Convert broadcast receiver to a stream of Result<Event, Status>
-        let stream = BroadcastStream::new(rx).filter_map(|result| match result {
-            Ok(event) => Some(Ok(event)),
-            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
-                warn!(skipped = n, "client lagged behind, skipped events");
-                None
+        let stream = async_stream::stream! {
+            loop {
+                tokio::select! {
+                    biased;
+
+                    _ = async {
+                        let _ = shutdown_rx.wait_for(|shutdown| *shutdown).await;
+                    } => break,
+                    event = events.next() => match event {
+                        Some(Ok(event)) => yield Ok::<Event, Status>(event),
+                        Some(Err(BroadcastStreamRecvError::Lagged(n))) => {
+                            warn!(skipped = n, "client lagged behind, skipped events");
+                        }
+                        None => break,
+                    },
+                }
             }
-        });
+        };
 
         Ok(Response::new(Box::pin(stream)))
     }
@@ -1452,6 +1457,25 @@ mod tests {
             client_event_tx,
         };
         Some((service, test_dir))
+    }
+    #[tokio::test]
+    async fn watch_events_ends_when_shutdown_is_requested() {
+        let Some((service, _test_dir)) = service_fixture(10).await else {
+            eprintln!("skipping: ProjectDirs unavailable in this environment");
+            return;
+        };
+        let mut stream = service
+            .watch_events(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner();
+
+        service.shutdown(Request::new(Empty {})).await.unwrap();
+
+        let next_event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("event stream did not end after shutdown");
+        assert!(next_event.is_none(), "event stream yielded after shutdown");
     }
 
     async fn get_low_battery_threshold(service: &ScyroxService) -> u32 {

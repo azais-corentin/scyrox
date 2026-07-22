@@ -1,6 +1,6 @@
 //! Daemon management commands.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -49,6 +49,15 @@ async fn configure_daemon(cmd: &DaemonConfigCommand, output: &Output) -> Result<
     Ok(())
 }
 
+fn detached_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
 async fn start_daemon(foreground: bool, output: &Output) -> Result<()> {
     if DaemonClient::connect().await.is_ok() {
         output.print_success("Daemon is already running");
@@ -67,10 +76,10 @@ async fn start_daemon(foreground: bool, output: &Output) -> Result<()> {
     } else {
         output.print_success("Starting daemon...");
 
-        let child = Command::new("setsid")
+        let child = detached_command("setsid")
             .args(["--fork", "scyroxd"])
             .spawn()
-            .or_else(|_| Command::new("scyroxd").spawn())
+            .or_else(|_| detached_command("scyroxd").spawn())
             .context("Failed to start scyroxd")?;
 
         output.print_success(&format!("Started daemon (PID: {})", child.id()));

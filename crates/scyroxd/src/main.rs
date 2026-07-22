@@ -125,9 +125,11 @@ async fn main() -> Result<()> {
     let (_hotplug_monitor, device_event_rx) = HotplugMonitor::start()?;
     info!("Hotplug monitor started");
 
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
     // Create the gRPC service
-    let (service, mut shutdown_rx, device_event_rx) =
-        ScyroxService::new(config, dirs, device_event_rx).await?;
+    let (service, device_event_rx) =
+        ScyroxService::new(config, dirs, device_event_rx, shutdown_tx.clone()).await?;
 
     // Spawn the device event handler task
     let event_handler = service.create_device_event_handler(device_event_rx);
@@ -174,6 +176,7 @@ async fn main() -> Result<()> {
                 }
                 _ = tokio::signal::ctrl_c() => {
                     info!("Ctrl+C received, shutting down");
+                    let _ = shutdown_tx.send(true);
                 }
             }
         });
