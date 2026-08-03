@@ -171,11 +171,12 @@ def build_figure(events: list[dict], log_path: Path) -> go.Figure:
             )
         )
 
-    add_sleep_spans(fig, events)
-    add_charging_spans(fig, samples)
+    overlay = Overlay()
+    add_sleep_spans(fig, overlay, events)
+    add_charging_spans(fig, overlay, samples)
     cut_spans = compute_cut_spans(events)
-    add_cut_seams(fig, cut_spans)
-    add_boundaries(fig, events, cut_spans)
+    add_cut_seams(overlay, cut_spans)
+    add_boundaries(overlay, events, cut_spans)
 
     first_ts = ts(events[0])
     last_ts = ts(events[-1])
@@ -191,6 +192,7 @@ def build_figure(events: list[dict], log_path: Path) -> go.Figure:
         yaxis=dict(title="Battery (%)", range=[0, 105]),
         yaxis2=dict(title="Voltage (mV)", overlaying="y", side="right"),
     )
+    overlay.apply(fig)
     return fig
 
 
@@ -206,7 +208,75 @@ def add_legend_swatch(fig: go.Figure, name: str, color: str) -> None:
     )
 
 
-def add_sleep_spans(fig: go.Figure, events: list[dict]) -> None:
+# annotation_position -> (xanchor, yanchor, y); mirrors plotly's add_vline.
+ANNOTATION_ANCHORS = {
+    "top left": ("right", "top", 1),
+    "top right": ("left", "top", 1),
+    "bottom right": ("left", "bottom", 0),
+}
+
+
+class Overlay:
+    """Collects layout shapes and annotations for a single batched assignment.
+
+    plotly re-validates and deep-copies the entire layout.shapes tuple on every
+    add_vrect/add_vline call, making incremental adds O(shapes^2). This log
+    produces ~2200 shapes, which cost 12 minutes; one assignment costs 0.2 s.
+    """
+
+    def __init__(self) -> None:
+        self.shapes: list[go.layout.Shape] = []
+        self.annotations: list[go.layout.Annotation] = []
+
+    def vrect(self, x0: datetime, x1: datetime, fillcolor: str) -> None:
+        self.shapes.append(
+            go.layout.Shape(
+                type="rect",
+                xref="x",
+                yref="y domain",
+                x0=x0,
+                x1=x1,
+                y0=0,
+                y1=1,
+                fillcolor=fillcolor,
+                opacity=1,
+                line=dict(width=0),
+                layer="below",
+            )
+        )
+
+    def vline(self, x: datetime, color: str, dash: str, text: str, position: str) -> None:
+        self.shapes.append(
+            go.layout.Shape(
+                type="line",
+                xref="x",
+                yref="y domain",
+                x0=x,
+                x1=x,
+                y0=0,
+                y1=1,
+                line=dict(color=color, dash=dash),
+            )
+        )
+        xanchor, yanchor, y = ANNOTATION_ANCHORS[position]
+        self.annotations.append(
+            go.layout.Annotation(
+                x=x,
+                y=y,
+                xref="x",
+                yref="y domain",
+                xanchor=xanchor,
+                yanchor=yanchor,
+                showarrow=False,
+                text=text,
+            )
+        )
+
+    def apply(self, fig: go.Figure) -> None:
+        fig.update_layout(shapes=self.shapes, annotations=self.annotations)
+
+
+def add_sleep_spans(fig: go.Figure, overlay: Overlay, events: list[dict]) -> None:
     """Contiguous runs of device_offline refresh errors, broken by any other
     event or a session change."""
     spans = []
@@ -234,12 +304,12 @@ def add_sleep_spans(fig: go.Figure, events: list[dict]) -> None:
         spans.append((ts(run_start), ts(run_last)))
 
     for x0, x1 in spans:
-        fig.add_vrect(x0=x0, x1=x1, fillcolor=SLEEP_FILL, opacity=1, line_width=0, layer="below")
+        overlay.vrect(x0, x1, SLEEP_FILL)
     if spans:
         add_legend_swatch(fig, "Sleep", SLEEP_SWATCH)
 
 
-def add_charging_spans(fig: go.Figure, samples: list[dict]) -> None:
+def add_charging_spans(fig: go.Figure, overlay: Overlay, samples: list[dict]) -> None:
     """Contiguous runs of charging samples within a session."""
     spans = []
     run_start = None
@@ -264,9 +334,7 @@ def add_charging_spans(fig: go.Figure, samples: list[dict]) -> None:
         spans.append((ts(run_start), ts(run_last)))
 
     for x0, x1 in spans:
-        fig.add_vrect(
-            x0=x0, x1=x1, fillcolor=CHARGING_FILL, opacity=1, line_width=0, layer="below"
-        )
+        overlay.vrect(x0, x1, CHARGING_FILL)
     if spans:
         add_legend_swatch(fig, "Charging", CHARGING_SWATCH)
 
@@ -296,7 +364,8 @@ def compute_cut_spans(events: list[dict]) -> list:
             continue
         session = e["session_started_unix_ms"]
         end = None
-        for later in events[i + 1 :]:
+        for j in range(i + 1, len(events)):
+            later = events[j]
             if later["session_started_unix_ms"] != session:
                 break
             end = later
@@ -321,31 +390,27 @@ def compute_cut_spans(events: list[dict]) -> list:
     return merged
 
 
-def add_cut_seams(fig: go.Figure, spans: list) -> None:
+def add_cut_seams(overlay: Overlay, spans: list) -> None:
     """Mark each removed window with a dashed vline at the resume point,
     labeled with the skipped duration."""
     for x0, x1 in spans:
-        fig.add_vline(
-            x=x1,
-            line=dict(color="#888888", dash="dash"),
-            annotation_text=f"cut {format_duration((x1 - x0).total_seconds())}",
-            annotation_position="bottom right",
+        overlay.vline(
+            x1,
+            "#888888",
+            "dash",
+            f"cut {format_duration((x1 - x0).total_seconds())}",
+            "bottom right",
         )
 
 
-def add_boundaries(fig: go.Figure, events: list[dict], cut_spans: list) -> None:
+def add_boundaries(overlay: Overlay, events: list[dict], cut_spans: list) -> None:
     # Session starts: first event of each session_started_unix_ms value.
     seen_sessions: set[int] = set()
     for e in events:
         session = e["session_started_unix_ms"]
         if session not in seen_sessions:
             seen_sessions.add(session)
-            fig.add_vline(
-                x=ts(e),
-                line=dict(color="#333333", dash="dash"),
-                annotation_text="daemon start",
-                annotation_position="top left",
-            )
+            overlay.vline(ts(e), "#333333", "dash", "daemon start", "top left")
 
     for e in events:
         if e["event"] in ("device_connected", "device_disconnected") and any(
@@ -353,19 +418,9 @@ def add_boundaries(fig: go.Figure, events: list[dict], cut_spans: list) -> None:
         ):
             continue
         if e["event"] == "device_connected":
-            fig.add_vline(
-                x=ts(e),
-                line=dict(color="green", dash="dot"),
-                annotation_text=f"connect ({e.get('source')})",
-                annotation_position="top right",
-            )
+            overlay.vline(ts(e), "green", "dot", f"connect ({e.get('source')})", "top right")
         elif e["event"] == "device_disconnected":
-            fig.add_vline(
-                x=ts(e),
-                line=dict(color="red", dash="dot"),
-                annotation_text="disconnect",
-                annotation_position="top right",
-            )
+            overlay.vline(ts(e), "red", "dot", "disconnect", "top right")
 
 
 def main() -> None:
